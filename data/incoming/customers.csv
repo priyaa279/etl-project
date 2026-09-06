@@ -1,0 +1,6 @@
+Customer ID,First Name,Last Name,Email,Status,Lifetime Value,Signup Date
+00123,Ada,Lovelace,ada@example.com,ACTIVE,1250.50,2026-08-01
+00451,Grace,Hopper,grace@example.com,ACTIVE,980.00,2026-08-05
+00982,Alan,Turing,alan@example.com,INACTIVE,1500.25,2026-07-12
+01007,Katherine,Johnson,katherine@example.com,ACTIVE,2100.00,2026-08-19
+

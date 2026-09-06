@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "metadata-driven-etl"
+version = "0.1.0"
+description = "Dataset-agnostic, YAML-driven ETL framework"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "duckdb>=1.1,<2",
+  "psycopg[binary]>=3.2,<4",
+  "PyYAML>=6.0,<7",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3,<9",
+  "ruff>=0.9,<1",
+]
+
+[project.scripts]
+etl = "metadata_etl.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/metadata_etl"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+

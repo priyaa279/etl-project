@@ -1,0 +1,84 @@
+config_schema_version: "1.0"
+
+dataset:
+  name: customers
+
+review:
+  required: true
+  approved: true
+  approved_by: priyaa
+
+source:
+  type: csv
+  path: data/incoming/customers.csv
+  options:
+    delimiter: ","
+
+runtime:
+  raw_root: data/raw
+
+normalization:
+  trim_strings: true
+  null_tokens:
+    - ""
+    - "NULL"
+    - "N/A"
+
+columns:
+  customer_id:
+    source: Customer ID
+    type: string
+    nullable: false
+    inference:
+      confidence: high
+      reason: leading_zeros
+
+  first_name:
+    source: First Name
+    type: string
+    nullable: false
+
+  last_name:
+    source: Last Name
+    type: string
+    nullable: false
+
+  email:
+    source: Email
+    type: string
+    nullable: true
+
+  status:
+    source: Status
+    type: string
+    nullable: false
+
+  lifetime_value:
+    source: Lifetime Value
+    type: decimal
+    nullable: true
+
+  signup_date:
+    source: Signup Date
+    type: date
+    format: "%Y-%m-%d"
+    nullable: false
+
+transformations:
+  - id: T001
+    type: filter
+    condition: status = 'ACTIVE'
+
+  - id: T002
+    type: derive
+    target_column: customer_label
+    datatype: string
+    expression: customer_id || ' - ' || first_name || ' ' || last_name
+
+load:
+  strategy: full
+  connection_env: ETL_POSTGRES_DSN
+  schema: public
+  staging_table: customers_staging
+  target_table: customers
+
