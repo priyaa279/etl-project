@@ -1,0 +1,82 @@
+config_schema_version: "1.0"
+
+dataset:
+  name: sensor_readings
+
+review:
+  required: true
+  approved: true
+  approved_by: priyaa
+
+source:
+  type: csv
+  path: data/incoming/sensor_readings.csv
+  options:
+    delimiter: ","
+
+runtime:
+  raw_root: data/raw
+
+normalization:
+  trim_strings: true
+  null_tokens:
+    - ""
+    - "NULL"
+
+columns:
+  device_id:
+    source: Device Code
+    type: string
+    nullable: false
+
+  reading:
+    source: Reading
+    type: string
+    nullable: false
+
+  quality:
+    source: Quality
+    type: string
+    nullable: false
+
+  observed_at:
+    source: Observed At
+    type: timestamp
+    nullable: false
+
+transformations:
+  - id: T001
+    type: cast
+    column: reading
+    datatype: decimal
+
+  - id: T002
+    type: map
+    column: quality
+    mappings:
+      OK: ACCEPTED
+      BAD: REJECTED
+
+  - id: T003
+    type: filter
+    condition: quality = 'ACCEPTED' AND reading >= 10
+
+  - id: T004
+    type: deduplicate
+    keys:
+      - device_id
+    order_by:
+      observed_at: desc
+
+  - id: T005
+    type: derive
+    target_column: adjusted_reading
+    datatype: decimal
+    expression: reading + 0.5
+
+load:
+  strategy: full
+  connection_env: ETL_POSTGRES_DSN
+  schema: public
+  staging_table: sensor_readings_staging
+  target_table: sensor_readings

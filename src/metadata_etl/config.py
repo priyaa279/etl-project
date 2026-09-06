@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -10,14 +9,8 @@ from typing import Any
 import yaml
 
 from metadata_etl.errors import ConfigError
-
-IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-SUPPORTED_TYPES = {"string", "integer", "decimal", "date", "timestamp", "boolean"}
-SUPPORTED_TRANSFORMS = {"filter", "derive"}
-FORBIDDEN_SQL = re.compile(
-    r"(;|--|/\*|\*/|\b(attach|copy|create|delete|drop|insert|install|load|pragma|update)\b)",
-    re.IGNORECASE,
-)
+from metadata_etl.transformations.operators.base import IDENTIFIER, SUPPORTED_TYPES
+from metadata_etl.transformations.registry import default_registry
 
 
 @dataclass(frozen=True)
@@ -100,13 +93,6 @@ def _validate_reviews(node: Any, path: str = "config") -> None:
     elif isinstance(node, list):
         for index, value in enumerate(node):
             _validate_reviews(value, f"{path}[{index}]")
-
-
-def _validate_expression(value: Any, path: str) -> str:
-    expression = _require_string(value, path)
-    if FORBIDDEN_SQL.search(expression):
-        raise ConfigError(f"{path} contains a forbidden SQL token")
-    return expression
 
 
 def load_config(config_path: str | Path, *, require_source: bool = True) -> ETLConfig:
@@ -195,7 +181,8 @@ def load_config(config_path: str | Path, *, require_source: bool = True) -> ETLC
         raise ConfigError("transformations must be a list")
     transformations: list[TransformConfig] = []
     seen_transform_ids: set[str] = set()
-    known_columns = {column.name for column in columns}
+    known_schema = {column.name: column.datatype for column in columns}
+    registry = default_registry()
     for index, value in enumerate(transform_values):
         item_path = f"transformations[{index}]"
         transform = _require_mapping(value, item_path)
@@ -204,28 +191,7 @@ def load_config(config_path: str | Path, *, require_source: bool = True) -> ETLC
             raise ConfigError(f"Duplicate transformation id: {transform_id}")
         seen_transform_ids.add(transform_id)
         transform_type = _require_string(transform.get("type"), f"{item_path}.type").lower()
-        if transform_type not in SUPPORTED_TRANSFORMS:
-            raise ConfigError(
-                f"{item_path}.type must be one of {sorted(SUPPORTED_TRANSFORMS)} in milestone 1"
-            )
-        values = dict(transform)
-        if transform_type == "filter":
-            values["condition"] = _validate_expression(
-                transform.get("condition"), f"{item_path}.condition"
-            )
-        if transform_type == "derive":
-            target = _identifier(transform.get("target_column"), f"{item_path}.target_column")
-            if target in known_columns:
-                raise ConfigError(f"{item_path}.target_column already exists: {target}")
-            datatype = _require_string(transform.get("datatype"), f"{item_path}.datatype").lower()
-            if datatype not in SUPPORTED_TYPES:
-                raise ConfigError(f"{item_path}.datatype must be one of {sorted(SUPPORTED_TYPES)}")
-            values["target_column"] = target
-            values["datatype"] = datatype
-            values["expression"] = _validate_expression(
-                transform.get("expression"), f"{item_path}.expression"
-            )
-            known_columns.add(target)
+        values = registry.validate(transform_type, transform, item_path, known_schema)
         transformations.append(TransformConfig(transform_id, transform_type, values))
 
     load = _require_mapping(root.get("load"), "load")

@@ -23,12 +23,20 @@ def _parser() -> argparse.ArgumentParser:
 
     run = subparsers.add_parser("run", help="Execute an approved YAML configuration")
     run.add_argument("config", type=Path)
+
+    subparsers.add_parser("operators", help="List registered transformation operators")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
+        if args.command == "operators":
+            from metadata_etl.transformations.registry import default_registry
+
+            print(json.dumps({"operators": default_registry().names}, indent=2))
+            return 0
+
         if args.command == "validate":
             config = load_config(args.config)
             from metadata_etl.validation import validate_plan

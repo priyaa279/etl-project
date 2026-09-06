@@ -5,11 +5,12 @@
 
 **New dataset = new config, not new pipeline.**
 
-This repository contains the first complete vertical slice: an approved YAML configuration drives
-a CSV source through raw preservation, structural normalization, SQL transformations, PostgreSQL
-staging, atomic trusted-table publishing, and a run ledger. There is no customer-specific Python.
+This repository contains the complete Milestone 1 vertical slice plus the Milestone 2 generic
+transformation engine. An approved YAML configuration drives a CSV source through raw preservation,
+structural normalization, registry-backed SQL transformations, PostgreSQL staging, atomic
+trusted-table publishing, and a run ledger. There is no dataset-specific Python.
 
-## Milestone 1 flow
+## Runtime flow
 
 ```text
 customers.csv
@@ -17,7 +18,8 @@ customers.csv
   -> create run ID and RUNNING ledger entry
   -> preserve byte-identical raw copy
   -> normalize configured columns and types
-  -> compile filter/derive operators into DuckDB SQL
+  -> validate operators through the transformation registry
+  -> compile cast/filter/derive/map/deduplicate operators into DuckDB SQL
   -> load a run-scoped PostgreSQL staging table
   -> atomically replace the trusted table
   -> record SUCCEEDED/FAILED metrics in the ledger
@@ -27,21 +29,22 @@ The engine reads and transforms the preserved raw artifact rather than rereading
 changing incoming file. The config hash is SHA-256 over the exact YAML bytes. If the folder is a Git
 repository, the current commit SHA is recorded; otherwise the ledger uses `UNAVAILABLE`.
 
-## What this milestone supports
+## Implemented capabilities
 
 - CSV sources with configurable delimiters
 - explicit source-to-canonical column mapping
 - string, integer, decimal, date, timestamp, and boolean types
 - configured trimming and null tokens
 - required human approval, including nested review flags
-- SQL `filter` and `derive` transformations
+- a generic transformation registry with operator-owned validation and SQL compilation
+- SQL `cast`, `filter`, `derive`, `map`, and `deduplicate` transformations
 - PostgreSQL full loads through transaction-scoped staging
 - immutable-by-convention raw run directories and SHA-256 checksums
 - run status, counts, timing, config identity, and errors in `etl_meta.etl_run_ledger`
 
 Not implemented yet: profiling, quality contracts/quarantine, schema drift, incremental/upsert/SCD2,
-JSON/Parquet/PostgreSQL sources, Airflow, Power BI, or the broader transformation registry. Those
-belong to later milestones after this path is running reliably.
+JSON/Parquet/PostgreSQL sources, Airflow, Power BI, or cloud services. Those belong to later
+milestones.
 
 ## Quick start
 
@@ -69,6 +72,12 @@ Validate the config and compiled plan without writing to PostgreSQL:
 
 ```bash
 etl validate configs/customers.yaml --show-sql
+```
+
+Inspect the active transformation registry:
+
+```bash
+etl operators
 ```
 
 Run the end-to-end pipeline:
@@ -99,7 +108,50 @@ The runnable example is [`configs/customers.yaml`](configs/customers.yaml). Impo
 - PostgreSQL credentials are named by `load.connection_env`; secrets are not stored in YAML.
 - SQL expressions reject statement separators, comments, and data-changing/DDL keywords. DuckDB
   binds the complete plan during `etl validate`, catching missing columns and invalid expressions.
-- Milestone 1 accepts only `source.type: csv` and `load.strategy: full`.
+- The current source/load scope remains `source.type: csv` and `load.strategy: full`.
+
+## Transformation operators
+
+Operators are resolved by `type` through one registry. The config parser does not contain
+operator-specific branches, and the pipeline does not know anything about customers, students,
+sensors, or any other business domain.
+
+```yaml
+transformations:
+  - id: T001
+    type: cast
+    column: reading
+    datatype: decimal
+
+  - id: T002
+    type: map
+    column: quality
+    mappings:
+      OK: ACCEPTED
+      BAD: REJECTED
+
+  - id: T003
+    type: filter
+    condition: quality = 'ACCEPTED' AND reading >= 10
+
+  - id: T004
+    type: deduplicate
+    keys: [device_id]
+    order_by:
+      observed_at: desc
+
+  - id: T005
+    type: derive
+    target_column: adjusted_reading
+    datatype: decimal
+    expression: reading + 0.5
+```
+
+`cast` replaces a column with the requested type. `map` replaces configured values and keeps
+unmapped values by default; an explicit `default` can override that behavior. `filter` and `derive`
+accept approved DuckDB expressions. `deduplicate` retains row number one for each configured key,
+using the declared sort precedence. The complete sensor example is
+[`configs/sensors.yaml`](configs/sensors.yaml).
 
 ## Atomicity and reruns
 
@@ -115,18 +167,22 @@ pytest
 ruff check .
 ```
 
-The tests cover configuration approval and safety, leading-zero preservation, SQL transformation
-behavior, and byte-identical raw copying. A live PostgreSQL instance is needed for the end-to-end
-CLI run, but not for these unit tests.
+The tests cover configuration approval and safety, leading-zero preservation, byte-identical raw
+copying, validation failures for every operator, and execution of all five operators against two
+unrelated dataset shapes. A live PostgreSQL instance is needed for the end-to-end CLI run, but not
+for these unit tests.
 
 ## Repository map
 
 ```text
 configs/customers.yaml              approved dataset metadata
+configs/sensors.yaml                unrelated dataset using all Milestone 2 operators
 data/incoming/customers.csv         example input
+data/incoming/sensor_readings.csv   second example input
 data/raw/                            run-scoped untouched copies (Git-ignored)
 src/metadata_etl/config.py          parsing and validation
 src/metadata_etl/sql_compiler.py    generic SQL compilation
+src/metadata_etl/transformations/   registry and reusable operators
 src/metadata_etl/source.py          raw preservation
 src/metadata_etl/postgres.py        ledger, staging, atomic publish
 src/metadata_etl/pipeline.py        dataset-agnostic execution sequence
@@ -134,4 +190,3 @@ src/metadata_etl/cli.py             etl validate / etl run
 sql/metadata_tables.sql             ledger DDL reference
 tests/                              unit tests
 ```
-
