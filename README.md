@@ -5,10 +5,11 @@
 
 **New dataset = new config, not new pipeline.**
 
-This repository contains the complete Milestone 1 vertical slice plus the Milestone 2 generic
-transformation engine. An approved YAML configuration drives a CSV source through raw preservation,
-structural normalization, registry-backed SQL transformations, PostgreSQL staging, atomic
-trusted-table publishing, and a run ledger. There is no dataset-specific Python.
+This repository contains the complete Milestone 1 vertical slice, the Milestone 2 generic
+transformation engine, and the Milestone 3 dataset-onboarding profiler. A new CSV is profiled into a
+starter YAML proposal, then an approved YAML configuration drives raw preservation, structural
+normalization, registry-backed SQL transformations, PostgreSQL staging, atomic trusted-table
+publishing, and a run ledger. There is no dataset-specific Python.
 
 ## Runtime flow
 
@@ -38,13 +39,85 @@ repository, the current commit SHA is recorded; otherwise the ledger uses `UNAVA
 - required human approval, including nested review flags
 - a generic transformation registry with operator-owned validation and SQL compilation
 - SQL `cast`, `filter`, `derive`, `map`, and `deduplicate` transformations
+- sampled CSV profiling with datatype, null, cardinality, range, length, and date-pattern proposals
+- exact duplicate-row reporting across the scanned CSV
+- starter YAML generation with explicit human-review gates
 - PostgreSQL full loads through transaction-scoped staging
 - immutable-by-convention raw run directories and SHA-256 checksums
 - run status, counts, timing, config identity, and errors in `etl_meta.etl_run_ledger`
 
-Not implemented yet: profiling, quality contracts/quarantine, schema drift, incremental/upsert/SCD2,
+Not implemented yet: quality contracts/quarantine, schema drift, incremental/upsert/SCD2,
 JSON/Parquet/PostgreSQL sources, Airflow, Power BI, or cloud services. Those belong to later
 milestones.
+
+## Dataset onboarding flow
+
+```text
+new CSV
+  -> profile a bounded sample
+  -> report exact duplicates from the full CSV scan
+  -> infer safe structural proposals
+  -> flag ambiguous or meaning-sensitive proposals
+  -> generate an unapproved starter YAML
+  -> human reviews, completes, and approves YAML
+  -> etl validate
+  -> etl run
+```
+
+Profile the included higher-education example and create a starter config:
+
+```bash
+etl profile data/incoming/students.csv --output configs/students.yaml
+```
+
+The default profiling sample is 10,000 rows. It can be changed without changing pipeline code:
+
+```bash
+etl profile data/incoming/students.csv --sample-size 50000
+```
+
+The report includes source and canonical column names, proposed types, null percentages, observed
+possible null tokens, distinct counts and cardinality, numeric bounds, string lengths, date
+patterns, leading-zero detection, possible key candidates, and ambiguous inferences. Column
+statistics are sample-based; exact duplicate counting scans all rows. Duplicates are reported only
+and never create an automatic `deduplicate` transformation.
+
+A generated proposal intentionally starts like this:
+
+```yaml
+config_schema_version: '1.0'
+dataset:
+  name: students
+review:
+  required: true
+  approved: false
+  approved_by: null
+columns:
+  student_id:
+    source: Student ID
+    type: string
+    inference:
+      confidence: high
+      reason: leading_zeros
+  birth_date:
+    source: Birth Date
+    type: date
+    format: null
+    inference:
+      confidence: medium
+      reason: ambiguous_date_format
+    review:
+      required: true
+      approved: false
+      reasons:
+        - ambiguous_date_format
+transformations: []
+```
+
+`format: null` is deliberate: the profiler refuses to choose between day-first and month-first
+dates when both interpretations are possible. The reviewer must select the format, approve every
+required nested review, and approve the top-level config. Until then, both `etl validate` and
+`etl run` reject the proposal.
 
 ## Quick start
 
@@ -109,6 +182,8 @@ The runnable example is [`configs/customers.yaml`](configs/customers.yaml). Impo
 - SQL expressions reject statement separators, comments, and data-changing/DDL keywords. DuckDB
   binds the complete plan during `etl validate`, catching missing columns and invalid expressions.
 - The current source/load scope remains `source.type: csv` and `load.strategy: full`.
+- Starter YAML is a proposal, not executable approval. Required review blocks must include
+  `approved: true` and a non-empty `approved_by` before runtime.
 
 ## Transformation operators
 
@@ -168,9 +243,10 @@ ruff check .
 ```
 
 The tests cover configuration approval and safety, leading-zero preservation, byte-identical raw
-copying, validation failures for every operator, and execution of all five operators against two
-unrelated dataset shapes. A live PostgreSQL instance is needed for the end-to-end CLI run, but not
-for these unit tests.
+copying, validation failures for every operator, execution of all five operators against unrelated
+dataset shapes, profiler inference and statistics, exact duplicate counting, starter YAML output,
+and runtime blocking before review. A live PostgreSQL instance is needed for the end-to-end CLI run,
+but not for these unit tests.
 
 ## Repository map
 
@@ -179,7 +255,9 @@ configs/customers.yaml              approved dataset metadata
 configs/sensors.yaml                unrelated dataset using all Milestone 2 operators
 data/incoming/customers.csv         example input
 data/incoming/sensor_readings.csv   second example input
+data/incoming/students.csv          profiling/onboarding example
 data/raw/                            run-scoped untouched copies (Git-ignored)
+src/metadata_etl/onboarding/        profiler and starter YAML generator
 src/metadata_etl/config.py          parsing and validation
 src/metadata_etl/sql_compiler.py    generic SQL compilation
 src/metadata_etl/transformations/   registry and reusable operators

@@ -24,6 +24,13 @@ def _parser() -> argparse.ArgumentParser:
     run = subparsers.add_parser("run", help="Execute an approved YAML configuration")
     run.add_argument("config", type=Path)
 
+    profile = subparsers.add_parser("profile", help="Profile a CSV and propose a starter config")
+    profile.add_argument("source", type=Path)
+    profile.add_argument("--output", type=Path, help="Write the proposed YAML configuration")
+    profile.add_argument("--sample-size", type=int, default=10_000)
+    profile.add_argument("--delimiter", default=",")
+    profile.add_argument("--force", action="store_true", help="Replace an existing output file")
+
     subparsers.add_parser("operators", help="List registered transformation operators")
     return parser
 
@@ -31,6 +38,20 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
+        if args.command == "profile":
+            from metadata_etl.onboarding import profile_csv, write_starter_config
+
+            profile = profile_csv(
+                args.source, sample_size=args.sample_size, delimiter=args.delimiter
+            )
+            output = profile.to_dict()
+            if args.output:
+                output["starter_config"] = str(
+                    write_starter_config(profile, args.output, force=args.force)
+                )
+            print(json.dumps(output, indent=2))
+            return 0
+
         if args.command == "operators":
             from metadata_etl.transformations.registry import default_registry
 

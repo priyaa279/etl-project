@@ -1,0 +1,4 @@
+Student ID,Enrolled On,Birth Date,Advisor Email,Credits
+00123,2026-09-01,01/02/2004,advisor1@example.edu,12
+00451,2026-09-02,02/03/2005,NULL,15
+00982,2026-09-03,03/04/2004,,18
