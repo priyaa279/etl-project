@@ -30,6 +30,10 @@ class FakePostgresStore:
     def finish_run(self, **values: Any) -> None:
         self.statuses.append(values["status"])
 
+    def record_quality_results(self, **values: Any) -> None:
+        assert values["summaries"] == []
+        assert values["quarantine_records"] == []
+
     def publish_full(self, **values: Any) -> int:
         rows = values["rows"]
         columns = [item[0] for item in values["columns"]]
@@ -56,6 +60,8 @@ def test_pipeline_orchestrates_the_vertical_slice(
     assert result.status == "SUCCEEDED"
     assert result.rows_extracted == 4
     assert result.rows_transformed == 3
+    assert result.rows_contract_passed == 3
+    assert result.rows_quarantined == 0
     assert result.rows_loaded == 3
     assert Path(result.raw_path).read_bytes() == (ROOT / "data/incoming/customers.csv").read_bytes()
     assert FakePostgresStore.statuses == ["SUCCEEDED"]

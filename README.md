@@ -5,11 +5,12 @@
 
 **New dataset = new config, not new pipeline.**
 
-This repository contains the complete Milestone 1 vertical slice, the Milestone 2 generic
-transformation engine, and the Milestone 3 dataset-onboarding profiler. A new CSV is profiled into a
-starter YAML proposal, then an approved YAML configuration drives raw preservation, structural
-normalization, registry-backed SQL transformations, PostgreSQL staging, atomic trusted-table
-publishing, and a run ledger. There is no dataset-specific Python.
+This repository contains the complete Milestone 1 vertical slice, Milestone 2 transformation
+engine, Milestone 3 onboarding profiler, and Milestone 4 data-quality contracts and quarantine. A
+new CSV is profiled into a starter YAML proposal, then an approved configuration drives raw
+preservation, normalization, SQL transformations, quality evaluation, privacy-safe quarantine,
+PostgreSQL staging, atomic trusted-table publishing, and operational metadata. There is no
+dataset-specific Python.
 
 ## Runtime flow
 
@@ -21,6 +22,9 @@ customers.csv
   -> normalize configured columns and types
   -> validate operators through the transformation registry
   -> compile cast/filter/derive/map/deduplicate operators into DuckDB SQL
+  -> evaluate not-null/unique/range/regex contracts
+  -> write failed rows as privacy-protected quarantine details
+  -> send only contract-passing rows forward
   -> load a run-scoped PostgreSQL staging table
   -> atomically replace the trusted table
   -> record SUCCEEDED/FAILED metrics in the ledger
@@ -42,13 +46,16 @@ repository, the current commit SHA is recorded; otherwise the ledger uses `UNAVA
 - sampled CSV profiling with datatype, null, cardinality, range, length, and date-pattern proposals
 - exact duplicate-row reporting across the scanned CSV
 - starter YAML generation with explicit human-review gates
+- post-transformation `not_null`, `unique`, `range`, and `regex` contracts
+- row-level quarantine with `full`, `masked`, `hashed`, and `none` value policies
+- per-rule results in `etl_meta.data_quality_results`
+- unique quarantined-row counts in the run ledger
 - PostgreSQL full loads through transaction-scoped staging
 - immutable-by-convention raw run directories and SHA-256 checksums
 - run status, counts, timing, config identity, and errors in `etl_meta.etl_run_ledger`
 
-Not implemented yet: quality contracts/quarantine, schema drift, incremental/upsert/SCD2,
-JSON/Parquet/PostgreSQL sources, Airflow, Power BI, or cloud services. Those belong to later
-milestones.
+Not implemented yet: schema drift, incremental/upsert/SCD2, JSON/Parquet/PostgreSQL sources,
+Airflow, Power BI, or cloud services. Those belong to later milestones.
 
 ## Dataset onboarding flow
 
@@ -112,6 +119,7 @@ columns:
       reasons:
         - ambiguous_date_format
 transformations: []
+contracts: []
 ```
 
 `format: null` is deliberate: the profiler refuses to choose between day-first and month-first
@@ -228,6 +236,87 @@ accept approved DuckDB expressions. `deduplicate` retains row number one for eac
 using the declared sort precedence. The complete sensor example is
 [`configs/sensors.yaml`](configs/sensors.yaml).
 
+## Data-quality contracts and quarantine
+
+Contracts are validated against the schema produced by the transformation plan, so they may safely
+reference derived columns. Invalid rule types, missing columns, malformed ranges, reversed bounds,
+invalid regular expressions, duplicate rule IDs, and invalid unique keys fail before runtime.
+
+```yaml
+columns:
+  student_id:
+    source: Student ID
+    type: string
+    classification: restricted
+    quarantine:
+      value: hashed
+
+  email:
+    source: Email
+    type: string
+    classification: pii
+    quarantine:
+      value: masked
+
+  gpa:
+    source: GPA
+    type: decimal
+    quarantine:
+      value: full
+
+transformations:
+  - id: T001
+    type: derive
+    target_column: total_cost
+    datatype: decimal
+    expression: credits * cost_per_credit
+
+contracts:
+  - id: DQ001
+    type: not_null
+    column: student_id
+
+  - id: DQ002
+    type: unique
+    columns: [student_id, term]
+
+  - id: DQ003
+    type: range
+    column: gpa
+    min: 0
+    max: 4
+
+  - id: DQ004
+    type: regex
+    column: email
+    pattern: '^[^@]+@[^@]+\.[^@]+$'
+
+  - id: DQ005
+    type: range
+    column: total_cost
+    min: 0
+```
+
+A row failing one or more contracts is excluded from staging and the trusted table. Each rule
+failure creates a quarantine detail, while `rows_quarantined` counts distinct failed rows. Rule
+summaries record checked and failed counts in `etl_meta.data_quality_results`. Row-level failures do
+not fail the pipeline; invalid configuration, transformation, metadata persistence, and publishing
+remain pipeline-level failures.
+
+Quarantine never stores the full record. It stores a SHA-256 record fingerprint plus the rule,
+failure reason, relevant column, and only the failed value permitted by that column's policy:
+
+- `full`: store the scalar value as text.
+- `masked`: deterministically retain the first and last character and mask the middle.
+- `hashed`: store a stable SHA-256 digest.
+- `none`: store no failed value. This is the default, including for derived columns.
+
+For `range` and `regex`, null values pass unless a separate `not_null` rule is configured. A
+`unique` rule ignores keys containing null; pair it with `not_null` rules when null keys are invalid.
+The runnable failure example is [`configs/students_quality.yaml`](configs/students_quality.yaml). It
+extracts and transforms five rows, passes one distinct row, quarantines four distinct rows, and
+loads only the passing row. Some rows fail multiple rules, producing six quarantine details.
+
 ## Atomicity and reruns
 
 Every run gets a unique staging table. Staging creation, row copy, trusted-table truncate/insert, and
@@ -245,24 +334,28 @@ ruff check .
 The tests cover configuration approval and safety, leading-zero preservation, byte-identical raw
 copying, validation failures for every operator, execution of all five operators against unrelated
 dataset shapes, profiler inference and statistics, exact duplicate counting, starter YAML output,
-and runtime blocking before review. A live PostgreSQL instance is needed for the end-to-end CLI run,
-but not for these unit tests.
+runtime blocking before review, contract validation/evaluation, privacy handling, quarantine
+persistence, rule summaries, trusted-row exclusion, and row-count accounting. A live PostgreSQL
+instance is needed for the end-to-end CLI run, but not for these unit tests.
 
 ## Repository map
 
 ```text
 configs/customers.yaml              approved dataset metadata
 configs/sensors.yaml                unrelated dataset using all Milestone 2 operators
+configs/students_quality.yaml       contracts, privacy policies, and quality failures
 data/incoming/customers.csv         example input
 data/incoming/sensor_readings.csv   second example input
 data/incoming/students.csv          profiling/onboarding example
+data/incoming/student_quality.csv   quality/quarantine example
 data/raw/                            run-scoped untouched copies (Git-ignored)
 src/metadata_etl/onboarding/        profiler and starter YAML generator
+src/metadata_etl/quality/           contract registry, evaluation, and privacy handling
 src/metadata_etl/config.py          parsing and validation
 src/metadata_etl/sql_compiler.py    generic SQL compilation
 src/metadata_etl/transformations/   registry and reusable operators
 src/metadata_etl/source.py          raw preservation
-src/metadata_etl/postgres.py        ledger, staging, atomic publish
+src/metadata_etl/postgres.py        ledger, quality metadata, quarantine, and atomic publish
 src/metadata_etl/pipeline.py        dataset-agnostic execution sequence
 src/metadata_etl/cli.py             etl validate / etl run
 sql/metadata_tables.sql             ledger DDL reference

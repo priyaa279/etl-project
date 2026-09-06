@@ -14,6 +14,7 @@ import duckdb
 from metadata_etl.config import ETLConfig, load_config
 from metadata_etl.errors import ETLError, ExtractionError
 from metadata_etl.postgres import PostgresStore
+from metadata_etl.quality.engine import evaluate_contracts
 from metadata_etl.source import RawArtifact, preserve_raw_copy
 from metadata_etl.sql_compiler import compile_transform_sql, csv_relation
 
@@ -29,6 +30,8 @@ class RunResult:
     raw_sha256: str
     rows_extracted: int
     rows_transformed: int
+    rows_contract_passed: int
+    rows_quarantined: int
     rows_loaded: int
     duration_seconds: float
 
@@ -77,8 +80,11 @@ def _extract_and_transform(
         raise ExtractionError("CSV query did not return a result")
     output_columns = [(item[0], item[1]) for item in description]
     positions = {name: index for index, (name, _) in enumerate(output_columns)}
+    contract_not_null_columns = {
+        contract.values["column"] for contract in config.contracts if contract.type == "not_null"
+    }
     for column in config.columns:
-        if not column.nullable:
+        if not column.nullable and column.name not in contract_not_null_columns:
             null_count = sum(row[positions[column.name]] is None for row in rows)
             if null_count:
                 raise ExtractionError(
@@ -88,7 +94,7 @@ def _extract_and_transform(
 
 
 def run_pipeline(config_path: str | Path) -> RunResult:
-    """Execute the milestone-1 CSV-to-PostgreSQL vertical slice."""
+    """Execute an approved CSV configuration through the generic ETL runtime."""
     config = load_config(config_path)
     run_id = _create_run_id()
     git_sha = _git_sha(config.path)
@@ -97,6 +103,8 @@ def run_pipeline(config_path: str | Path) -> RunResult:
     raw: RawArtifact | None = None
     rows_extracted: int | None = None
     rows_transformed: int | None = None
+    rows_contract_passed: int | None = None
+    rows_quarantined: int | None = None
 
     with PostgresStore(config.dsn) as store:
         store.ensure_metadata_tables()
@@ -112,12 +120,26 @@ def run_pipeline(config_path: str | Path) -> RunResult:
             raw = preserve_raw_copy(config.source_path, config.raw_root, config.dataset, run_id)
             rows_extracted, output_columns, rows = _extract_and_transform(config, raw)
             rows_transformed = len(rows)
+            quality = evaluate_contracts(
+                config.contracts,
+                [name for name, _ in output_columns],
+                rows,
+                {column.name: column.quarantine_value for column in config.columns},
+            )
+            rows_contract_passed = quality.rows_contract_passed
+            rows_quarantined = quality.rows_quarantined
+            store.record_quality_results(
+                run_id=run_id,
+                dataset=config.dataset,
+                summaries=quality.summaries,
+                quarantine_records=quality.quarantine_records,
+            )
             rows_loaded = store.publish_full(
                 destination_schema=config.destination_schema,
                 staging_table=config.staging_table,
                 target_table=config.target_table,
                 columns=output_columns,
-                rows=rows,
+                rows=quality.valid_rows,
                 run_id=run_id,
             )
         except Exception as exc:
@@ -130,6 +152,8 @@ def run_pipeline(config_path: str | Path) -> RunResult:
                 raw_sha256=raw.sha256 if raw else None,
                 rows_extracted=rows_extracted,
                 rows_transformed=rows_transformed,
+                rows_contract_passed=rows_contract_passed,
+                rows_quarantined=rows_quarantined,
                 error_message=str(exc)[:4000],
             )
             if isinstance(exc, ETLError):
@@ -146,6 +170,8 @@ def run_pipeline(config_path: str | Path) -> RunResult:
             raw_sha256=raw.sha256,
             rows_extracted=rows_extracted,
             rows_transformed=rows_transformed,
+            rows_contract_passed=rows_contract_passed,
+            rows_quarantined=rows_quarantined,
             rows_loaded=rows_loaded,
         )
 
@@ -159,6 +185,8 @@ def run_pipeline(config_path: str | Path) -> RunResult:
         raw_sha256=raw.sha256,
         rows_extracted=rows_extracted,
         rows_transformed=rows_transformed,
+        rows_contract_passed=rows_contract_passed,
+        rows_quarantined=rows_quarantined,
         rows_loaded=rows_loaded,
         duration_seconds=duration,
     )

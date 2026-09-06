@@ -9,6 +9,7 @@ from typing import Any
 import yaml
 
 from metadata_etl.errors import ConfigError
+from metadata_etl.quality.contracts import default_contract_registry
 from metadata_etl.transformations.operators.base import IDENTIFIER, SUPPORTED_TYPES
 from metadata_etl.transformations.registry import default_registry
 
@@ -20,10 +21,19 @@ class ColumnConfig:
     datatype: str
     nullable: bool
     date_format: str | None = None
+    classification: str | None = None
+    quarantine_value: str = "none"
 
 
 @dataclass(frozen=True)
 class TransformConfig:
+    id: str
+    type: str
+    values: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ContractConfig:
     id: str
     type: str
     values: dict[str, Any]
@@ -43,6 +53,7 @@ class ETLConfig:
     null_tokens: tuple[str, ...]
     columns: tuple[ColumnConfig, ...]
     transformations: tuple[TransformConfig, ...]
+    contracts: tuple[ContractConfig, ...]
     connection_env: str
     destination_schema: str
     staging_table: str
@@ -174,7 +185,32 @@ def load_config(config_path: str | Path, *, require_source: bool = True) -> ETLC
             raise ConfigError(
                 f"columns.{canonical_name}.format is required; dates are never interpreted ambiguously"
             )
-        columns.append(ColumnConfig(canonical_name, source_name, datatype, nullable, date_format))
+        classification = column.get("classification")
+        if classification is not None:
+            classification = _require_string(
+                classification, f"columns.{canonical_name}.classification"
+            )
+        quarantine = _require_mapping(
+            column.get("quarantine", {}), f"columns.{canonical_name}.quarantine"
+        )
+        quarantine_value = _require_string(
+            quarantine.get("value", "none"), f"columns.{canonical_name}.quarantine.value"
+        ).lower()
+        if quarantine_value not in {"full", "masked", "hashed", "none"}:
+            raise ConfigError(
+                f"columns.{canonical_name}.quarantine.value must be full, masked, hashed, or none"
+            )
+        columns.append(
+            ColumnConfig(
+                canonical_name,
+                source_name,
+                datatype,
+                nullable,
+                date_format,
+                classification,
+                quarantine_value,
+            )
+        )
 
     transform_values = root.get("transformations", [])
     if not isinstance(transform_values, list):
@@ -193,6 +229,23 @@ def load_config(config_path: str | Path, *, require_source: bool = True) -> ETLC
         transform_type = _require_string(transform.get("type"), f"{item_path}.type").lower()
         values = registry.validate(transform_type, transform, item_path, known_schema)
         transformations.append(TransformConfig(transform_id, transform_type, values))
+
+    contract_values = root.get("contracts", [])
+    if not isinstance(contract_values, list):
+        raise ConfigError("contracts must be a list")
+    contracts: list[ContractConfig] = []
+    seen_contract_ids: set[str] = set()
+    contract_registry = default_contract_registry()
+    for index, value in enumerate(contract_values):
+        item_path = f"contracts[{index}]"
+        contract = _require_mapping(value, item_path)
+        contract_id = _identifier(contract.get("id"), f"{item_path}.id")
+        if contract_id in seen_contract_ids:
+            raise ConfigError(f"Duplicate contract id: {contract_id}")
+        seen_contract_ids.add(contract_id)
+        contract_type = _require_string(contract.get("type"), f"{item_path}.type").lower()
+        values = contract_registry.validate(contract_type, contract, item_path, known_schema)
+        contracts.append(ContractConfig(contract_id, contract_type, values))
 
     load = _require_mapping(root.get("load"), "load")
     strategy = _require_string(load.get("strategy"), "load.strategy").lower()
@@ -220,6 +273,7 @@ def load_config(config_path: str | Path, *, require_source: bool = True) -> ETLC
         null_tokens=tuple(null_tokens_value),
         columns=tuple(columns),
         transformations=tuple(transformations),
+        contracts=tuple(contracts),
         connection_env=connection_env,
         destination_schema=destination_schema,
         staging_table=staging_table,

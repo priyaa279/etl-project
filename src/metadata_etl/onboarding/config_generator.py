@@ -92,6 +92,7 @@ def generate_starter_config(profile: DatasetProfile) -> dict[str, Any]:
         },
         "columns": columns,
         "transformations": [],
+        "contracts": [],
         "load": {
             "strategy": "full",
             "connection_env": "ETL_POSTGRES_DSN",

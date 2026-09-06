@@ -94,6 +94,7 @@ def test_starter_yaml_contains_proposals_but_no_automatic_deduplication(
     assert generated["columns"]["birth_date"]["review"]["approved"] is False
     assert generated["onboarding"]["exact_duplicate_count"] == 0
     assert generated["transformations"] == []
+    assert generated["contracts"] == []
 
 
 def test_generated_config_is_rejected_until_all_reviews_are_completed(

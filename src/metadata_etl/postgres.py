@@ -76,9 +76,50 @@ class PostgresStore:
                     raw_sha256 TEXT,
                     rows_extracted BIGINT,
                     rows_transformed BIGINT,
+                    rows_contract_passed BIGINT,
+                    rows_quarantined BIGINT,
                     rows_loaded BIGINT,
                     duration_seconds DOUBLE PRECISION,
                     error_message TEXT
+                )
+                """
+            )
+            self.conn.execute(
+                "ALTER TABLE etl_meta.etl_run_ledger "
+                "ADD COLUMN IF NOT EXISTS rows_contract_passed BIGINT"
+            )
+            self.conn.execute(
+                "ALTER TABLE etl_meta.etl_run_ledger "
+                "ADD COLUMN IF NOT EXISTS rows_quarantined BIGINT"
+            )
+            self.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS etl_meta.data_quality_results (
+                    run_id TEXT NOT NULL,
+                    dataset TEXT NOT NULL,
+                    rule_id TEXT NOT NULL,
+                    rule_type TEXT NOT NULL,
+                    records_checked BIGINT NOT NULL,
+                    records_failed BIGINT NOT NULL,
+                    status TEXT NOT NULL,
+                    timestamp TIMESTAMPTZ NOT NULL,
+                    PRIMARY KEY (run_id, rule_id)
+                )
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS etl_meta.etl_quarantine (
+                    quarantine_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    dataset TEXT NOT NULL,
+                    rule_id TEXT NOT NULL,
+                    rule_type TEXT NOT NULL,
+                    failure_reason TEXT NOT NULL,
+                    record_identifier TEXT NOT NULL,
+                    failed_column TEXT,
+                    failed_value TEXT,
+                    quarantined_at TIMESTAMPTZ NOT NULL
                 )
                 """
             )
@@ -115,6 +156,8 @@ class PostgresStore:
         raw_sha256: str | None = None,
         rows_extracted: int | None = None,
         rows_transformed: int | None = None,
+        rows_contract_passed: int | None = None,
+        rows_quarantined: int | None = None,
         rows_loaded: int | None = None,
         error_message: str | None = None,
     ) -> None:
@@ -129,6 +172,8 @@ class PostgresStore:
                     raw_sha256 = COALESCE(%s, raw_sha256),
                     rows_extracted = COALESCE(%s, rows_extracted),
                     rows_transformed = COALESCE(%s, rows_transformed),
+                    rows_contract_passed = COALESCE(%s, rows_contract_passed),
+                    rows_quarantined = COALESCE(%s, rows_quarantined),
                     rows_loaded = COALESCE(%s, rows_loaded),
                     error_message = %s
                 WHERE run_id = %s
@@ -141,11 +186,71 @@ class PostgresStore:
                     raw_sha256,
                     rows_extracted,
                     rows_transformed,
+                    rows_contract_passed,
+                    rows_quarantined,
                     rows_loaded,
                     error_message,
                     run_id,
                 ),
             )
+
+    def record_quality_results(
+        self,
+        *,
+        run_id: str,
+        dataset: str,
+        summaries: Sequence[Any],
+        quarantine_records: Sequence[Any],
+    ) -> None:
+        try:
+            with self.conn.transaction(), self.conn.cursor() as cursor:
+                if summaries:
+                    cursor.executemany(
+                        """
+                        INSERT INTO etl_meta.data_quality_results (
+                            run_id, dataset, rule_id, rule_type, records_checked,
+                            records_failed, status, timestamp
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        [
+                            (
+                                run_id,
+                                dataset,
+                                summary.rule_id,
+                                summary.rule_type,
+                                summary.records_checked,
+                                summary.records_failed,
+                                summary.status,
+                                summary.timestamp,
+                            )
+                            for summary in summaries
+                        ],
+                    )
+                if quarantine_records:
+                    cursor.executemany(
+                        """
+                        INSERT INTO etl_meta.etl_quarantine (
+                            run_id, dataset, rule_id, rule_type, failure_reason,
+                            record_identifier, failed_column, failed_value, quarantined_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        [
+                            (
+                                run_id,
+                                dataset,
+                                record.rule_id,
+                                record.rule_type,
+                                record.failure_reason,
+                                record.record_identifier,
+                                record.failed_column,
+                                record.failed_value,
+                                record.quarantined_at,
+                            )
+                            for record in quarantine_records
+                        ],
+                    )
+        except psycopg.Error as exc:
+            raise LoadError(f"Could not persist data-quality results: {exc}") from exc
 
     def publish_full(
         self,

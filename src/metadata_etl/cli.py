@@ -69,6 +69,7 @@ def main(argv: list[str] | None = None) -> int:
                 "config_schema_version": config.schema_version,
                 "config_hash": config.config_hash,
                 "transformations": len(config.transformations),
+                "contracts": len(config.contracts),
             }
             print(json.dumps(output, indent=2))
             if args.show_sql:

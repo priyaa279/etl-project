@@ -1,0 +1,107 @@
+config_schema_version: "1.0"
+
+dataset:
+  name: students_quality
+
+review:
+  required: true
+  approved: true
+  approved_by: priyaa
+
+source:
+  type: csv
+  path: data/incoming/student_quality.csv
+  options:
+    delimiter: ","
+
+runtime:
+  raw_root: data/raw
+
+normalization:
+  trim_strings: true
+  null_tokens:
+    - ""
+    - "NULL"
+
+columns:
+  student_id:
+    source: Student ID
+    type: string
+    nullable: false
+    classification: restricted
+    quarantine:
+      value: hashed
+
+  term:
+    source: Term
+    type: string
+    nullable: false
+    quarantine:
+      value: none
+
+  email:
+    source: Email
+    type: string
+    nullable: true
+    classification: pii
+    quarantine:
+      value: masked
+
+  gpa:
+    source: GPA
+    type: decimal
+    nullable: false
+    quarantine:
+      value: full
+
+  credits:
+    source: Credits
+    type: integer
+    nullable: false
+
+  cost_per_credit:
+    source: Cost Per Credit
+    type: decimal
+    nullable: false
+
+transformations:
+  - id: T001
+    type: derive
+    target_column: total_cost
+    datatype: decimal
+    expression: credits * cost_per_credit
+
+contracts:
+  - id: DQ001
+    type: not_null
+    column: email
+
+  - id: DQ002
+    type: unique
+    columns:
+      - student_id
+      - term
+
+  - id: DQ003
+    type: range
+    column: gpa
+    min: 0
+    max: 4
+
+  - id: DQ004
+    type: regex
+    column: email
+    pattern: '^[^@]+@[^@]+\.[^@]+$'
+
+  - id: DQ005
+    type: range
+    column: total_cost
+    min: 0
+    max: 1800
+
+load:
+  strategy: full
+  connection_env: ETL_POSTGRES_DSN
+  schema: public
+  staging_table: students_quality_staging
+  target_table: students_quality

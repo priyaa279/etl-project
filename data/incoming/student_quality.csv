@@ -1,0 +1,6 @@
+Student ID,Term,Email,GPA,Credits,Cost Per Credit
+00123,2026FA,ada@example.edu,3.8,12,100
+00451,2026FA,bad-email,4.2,15,110
+00982,2026FA,alan@example.edu,3.5,18,95
+00982,2026FA,alan2@example.edu,3.6,19,95
+01007,2026FA,,3.9,14,105
