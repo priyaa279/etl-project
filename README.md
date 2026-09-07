@@ -5,19 +5,60 @@
 
 **New dataset = new config, not new pipeline.**
 
-This repository contains Milestones 1–8: the vertical ETL slice, generic transformation engine,
-onboarding profiler, data-quality/quarantine layer, reliability controls, advanced SCD2 loading,
-generic CSV/JSON/Parquet/PostgreSQL connectors, production-oriented orchestration, and backend
-observability. Approved configuration drives raw preservation, schema fingerprinting, explicit
-normalization, SQL transformations, quality evaluation, privacy-safe quarantine, transactional
-publishing, and operational metadata. Airflow schedules the same CLI, while PostgreSQL views and
-read-only CLI commands summarize health; there is no dataset-specific Python, DAG, or monitoring.
+This project is a complete local data-engineering platform built with Python, DuckDB, PostgreSQL,
+YAML, Docker, and Airflow. Approved metadata drives extraction, raw preservation, SQL
+transformations, quality gates, privacy-safe quarantine, reliable publishing, and observability.
+Airflow schedules the same CLI used locally; it contains no ETL business logic.
+
+**Sources:** CSV, JSON, Parquet, PostgreSQL · **Reliability:** drift, contracts, quarantine,
+watermarks, full/incremental/upsert/SCD2, backfills · **Production:** Docker, Airflow, CI,
+structured logs · **Operations:** PostgreSQL health views and monitoring CLI
+
+Milestones 1–9 are implemented. The final dataset-independence proof runs unrelated e-commerce,
+higher-education, and IoT inputs through the same engine without adding domain-specific Python.
+
+## Quick start
+
+Install the local CLI, configure `.env` from `.env.example`, and start the stack:
+
+```powershell
+python -m pip install -e ".[dev]"
+docker compose up -d
+$env:ETL_POSTGRES_DSN = "postgresql://etl:YOUR_PASSWORD@localhost:5432/etl"
+etl validate-all configs
+etl run configs/portfolio_orders.yaml
+etl status
+```
+
+Local commands invoke the framework directly. Airflow is optional orchestration around those same
+commands; its separate setup and smoke-test instructions appear below.
+
+## Portfolio proof
+
+| Domain | Source | Generic processing | Quality | Load |
+| --- | --- | --- | --- | --- |
+| E-commerce order lines | nested JSON | explicit explode, cast, map, filter, derive | not-null, unique, range | upsert |
+| Higher-education students | CSV | derive | not-null, unique, range, regex | full |
+| IoT telemetry | Parquet | cast, map, filter, deduplicate, derive | not-null, unique, range | incremental |
+
+Run the reproducible proof against the local stack:
+
+```powershell
+docker compose up -d
+$env:ETL_POSTGRES_DSN = "postgresql://etl:etl@localhost:5432/etl"
+python scripts/run_portfolio_demo.py
+```
+
+The demonstration validates all configs, runs and reruns the three domains, exercises schema
+drift, SCD2, and bounded-backfill behavior, and displays trusted counts plus operational health.
+See [dataset-independence evidence](docs/dataset_independence.md), the
+[architecture guide](docs/architecture.md), and [portfolio talking points](docs/portfolio_talking_points.md).
 
 ## Runtime flow
 
 ```text
-customers.csv
-  -> validate approved customers.yaml
+input source
+  -> validate approved dataset YAML
   -> create run ID and RUNNING ledger entry
   -> select CSV/JSON/Parquet/PostgreSQL connector
   -> preserve the extracted source representation
@@ -77,6 +118,9 @@ repository, the current commit SHA is recorded; otherwise the ledger uses `UNAVA
 - GitHub Actions checks for tests, lint, formatting, runnable configs, compilation, and PostgreSQL
 - an `etl_observability` PostgreSQL schema with health, trend, quality, drift, and watermark views
 - read-only `etl status` and `etl runs` operational monitoring commands
+- three unrelated portfolio datasets executed through one dataset-agnostic engine
+- a rerunnable CLI-driven demonstration covering quality, drift, and load idempotency evidence
+- architecture, dataset-independence, and interview walkthrough documentation
 
 Not implemented yet: Power BI dashboards, cloud services, alerting integrations, Kafka/streaming,
 Spark, dbt, Kubernetes, Terraform, automatic schema migration, or automatic business-rule
@@ -152,7 +196,7 @@ dates when both interpretations are possible. The reviewer must select the forma
 required nested review, and approve the top-level config. Until then, both `etl validate` and
 `etl run` reject the proposal.
 
-## Quick start
+## Detailed local CLI setup
 
 Requirements: Python 3.11+ and PostgreSQL. Docker Compose is optional for CLI development and is the
 supported way to run the complete local PostgreSQL/Airflow stack.
@@ -600,12 +644,15 @@ docker compose --profile tools run --rm etl validate configs/customers.yaml
 docker compose --profile tools run --rm etl run configs/customers.yaml
 ```
 
-For an orchestration smoke test, list or manually test the two unrelated generated DAGs:
+For an orchestration smoke test, list or manually test the generated DAGs. The portfolio order and
+telemetry DAGs appear through config discovery; no DAG Python change is required:
 
 ```bash
 docker compose exec airflow-scheduler airflow dags list
 docker compose exec airflow-scheduler airflow dags test etl_customers 2026-09-07
 docker compose exec airflow-scheduler airflow dags test etl_sensor_readings 2026-09-07
+docker compose exec airflow-scheduler airflow dags test etl_portfolio_order_lines 2026-09-07
+docker compose exec airflow-scheduler airflow dags test etl_portfolio_sensor_telemetry 2026-09-07
 ```
 
 ## Structured logging and failures
@@ -757,7 +804,10 @@ bounded backfills, flat/nested/NDJSON normalization, Parquet schemas, PostgreSQL
 full rerun idempotency, trusted-row exclusion, orchestration discovery, CLI status propagation,
 structured-log redaction, observability installation, health derivation, safe rates, privacy-safe
 aggregates, monitoring CLI behavior, and row-count accounting. PostgreSQL integration tests are
-enabled by `ETL_TEST_POSTGRES_DSN` and otherwise skip locally.
+enabled by `ETL_TEST_POSTGRES_DSN` and otherwise skip locally. A dedicated portfolio proof test
+runs JSON orders, CSV students, and Parquet telemetry through the same `run_pipeline` entry point,
+checks their expected transformation/quality outcomes, and verifies safe upsert and incremental
+reruns.
 
 ## Repository map
 
@@ -772,6 +822,9 @@ configs/scd2_regions_*.yaml         two-run SCD2 history demo
 configs/nested_orders.yaml          configured nested JSON explosion
 configs/parquet_weather.yaml        Parquet source demo
 configs/postgres_assets.yaml        table-based PostgreSQL source demo
+configs/portfolio_orders.yaml       e-commerce JSON/upsert proof
+configs/portfolio_sensor_telemetry.yaml IoT Parquet/incremental proof
+configs/portfolio_schema_drift_*.yaml controlled drift proof
 configs/drafts/                     unapproved profiler drafts; excluded from scheduling
 data/incoming/customers.csv         example input
 data/incoming/sensor_readings.csv   second example input
@@ -782,7 +835,13 @@ data/incoming/schema_drift_*.csv    two-run schema drift example
 data/incoming/scd2_regions_*.csv    changing SCD2 source snapshots
 data/incoming/nested_orders.json    nested JSON source
 data/incoming/weather_readings.parquet embedded-schema source
+data/incoming/portfolio_orders.json nested e-commerce source
+data/incoming/portfolio_sensor_telemetry.parquet IoT source
 data/raw/                            run-scoped untouched copies (Git-ignored)
+scripts/run_portfolio_demo.py       rerunnable public-CLI demonstration
+docs/dataset_independence.md        three-domain proof matrix and evidence
+docs/architecture.md                system flow, responsibilities, and principles
+docs/portfolio_talking_points.md    concise interview walkthrough
 src/metadata_etl/onboarding/        profiler and starter YAML generator
 src/metadata_etl/quality/           contract registry, evaluation, and privacy handling
 src/metadata_etl/schema/            deterministic fingerprints and drift comparison

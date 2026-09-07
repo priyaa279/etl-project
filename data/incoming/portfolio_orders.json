@@ -1,0 +1,38 @@
+{
+  "orders": [
+    {
+      "order": {
+        "id": "ORD-1001",
+        "date": "2026-09-01",
+        "status": "OPEN"
+      },
+      "customer": {"id": "CUS-001"},
+      "items": [
+        {"product_id": "SKU-BOOK", "quantity": "2", "unit_price": "15.50"},
+        {"product_id": "SKU-BAG", "quantity": "1", "unit_price": "42.00"}
+      ]
+    },
+    {
+      "order": {
+        "id": "ORD-1002",
+        "date": "2026-09-02",
+        "status": "CANCELLED"
+      },
+      "customer": {"id": "CUS-002"},
+      "items": [
+        {"product_id": "SKU-LAMP", "quantity": "1", "unit_price": "28.00"}
+      ]
+    },
+    {
+      "order": {
+        "id": "ORD-1003",
+        "date": "2026-09-03",
+        "status": "OPEN"
+      },
+      "customer": {"id": "CUS-003"},
+      "items": [
+        {"product_id": "SKU-CABLE", "quantity": "0", "unit_price": "9.99"}
+      ]
+    }
+  ]
+}

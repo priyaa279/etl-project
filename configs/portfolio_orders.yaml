@@ -1,0 +1,120 @@
+config_schema_version: "1.0"
+
+dataset:
+  name: portfolio_order_lines
+
+review:
+  required: true
+  approved: true
+  approved_by: priyaa
+
+orchestration:
+  enabled: true
+  schedule: "0 4 * * *"
+  retries: 2
+  retry_delay_minutes: 5
+
+source:
+  type: json
+  path: data/incoming/portfolio_orders.json
+
+runtime:
+  raw_root: data/raw
+
+normalization:
+  trim_strings: true
+  null_tokens: [""]
+  json:
+    root_path: orders
+    fields:
+      order_id: order.id
+      customer_id: customer.id
+      order_date: order.date
+      order_status: order.status
+    explode:
+      path: items
+      as: item
+      fields:
+        product_id: item.product_id
+        quantity: item.quantity
+        unit_price: item.unit_price
+
+columns:
+  order_id:
+    type: string
+    nullable: false
+  customer_id:
+    type: string
+    nullable: false
+  order_date:
+    type: date
+    format: "%Y-%m-%d"
+    nullable: false
+  order_status:
+    type: string
+    nullable: false
+  product_id:
+    type: string
+    nullable: false
+  quantity:
+    type: string
+    nullable: false
+  unit_price:
+    type: string
+    nullable: false
+
+transformations:
+  - id: T001
+    type: cast
+    column: quantity
+    datatype: integer
+  - id: T002
+    type: cast
+    column: unit_price
+    datatype: decimal
+  - id: T003
+    type: map
+    column: order_status
+    mappings:
+      OPEN: ACTIVE
+      CANCELLED: CANCELLED
+  - id: T004
+    type: filter
+    condition: order_status = 'ACTIVE'
+  - id: T005
+    type: derive
+    target_column: line_amount
+    datatype: decimal
+    expression: quantity * unit_price
+
+contracts:
+  - id: DQ001
+    type: not_null
+    column: order_id
+  - id: DQ002
+    type: unique
+    columns: [order_id, product_id]
+  - id: DQ003
+    type: range
+    column: quantity
+    min: 1
+    max: 100
+  - id: DQ004
+    type: range
+    column: line_amount
+    min: 0.01
+    max: 100000
+
+schema_drift:
+  added_columns: warn
+  removed_columns: fail
+  datatype_change: fail
+  canonical_change: fail
+
+load:
+  strategy: upsert
+  keys: [order_id, product_id]
+  connection_env: ETL_POSTGRES_DSN
+  schema: public
+  staging_table: portfolio_order_lines_staging
+  target_table: portfolio_order_lines

@@ -1,0 +1,44 @@
+config_schema_version: "1.0"
+dataset:
+  name: portfolio_schema_drift
+review:
+  required: true
+  approved: true
+  approved_by: priyaa
+source:
+  type: csv
+  path: data/incoming/schema_drift_run1.csv
+runtime:
+  raw_root: data/raw
+normalization:
+  trim_strings: true
+  null_tokens: [""]
+columns:
+  entity_id:
+    source: Record ID
+    type: string
+    nullable: false
+  name:
+    source: Name
+    type: string
+    nullable: false
+  updated_at:
+    source: Updated At
+    type: timestamp
+    nullable: false
+transformations: []
+contracts:
+  - id: DQ001
+    type: not_null
+    column: entity_id
+schema_drift:
+  added_columns: warn
+  removed_columns: warn
+  datatype_change: fail
+  canonical_change: fail
+load:
+  strategy: full
+  connection_env: ETL_POSTGRES_DSN
+  schema: public
+  staging_table: portfolio_schema_drift_staging
+  target_table: portfolio_schema_drift
