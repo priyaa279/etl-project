@@ -13,6 +13,8 @@ dist/
 build/
 data/raw/*
 !data/raw/.gitkeep
+data/uploads/*
+!data/uploads/.gitkeep
 airflow/config/*
 !airflow/config/.gitkeep
 airflow/logs/*

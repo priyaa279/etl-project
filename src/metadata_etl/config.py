@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -130,6 +130,16 @@ class ETLConfig:
                 "PostgreSQL source"
             )
         return value
+
+
+def with_source_override(config: ETLConfig, source_override: str | Path) -> ETLConfig:
+    """Bind one file artifact to a run without changing approved config semantics or hash."""
+    if config.source_type not in {"csv", "json", "parquet"}:
+        raise ConfigError("Runtime source override is supported only for file sources")
+    path = Path(source_override).resolve()
+    if not path.is_file():
+        raise ConfigError(f"Runtime source override does not exist: {path}")
+    return replace(config, source_path=path)
 
 
 def _require_mapping(value: Any, path: str) -> dict[str, Any]:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import uuid
 from pathlib import Path
 
 import psycopg
@@ -31,14 +32,15 @@ def test_full_publish_and_ledger_against_postgres(
     config_path = tmp_path / "ci_customers.yaml"
     config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
 
-    result = run_pipeline(config_path)
+    correlation_id = f"ci-{uuid.uuid4()}"
+    result = run_pipeline(config_path, correlation_id=correlation_id)
 
     with psycopg.connect(dsn) as connection:
         trusted = connection.execute("SELECT count(*) FROM public.ci_customers").fetchone()
         ledger = connection.execute(
-            "SELECT status, rows_loaded, load_strategy "
+            "SELECT status, rows_loaded, load_strategy, correlation_id "
             "FROM etl_meta.etl_run_ledger WHERE run_id = %s",
             (result.run_id,),
         ).fetchone()
     assert trusted == (3,)
-    assert ledger == ("SUCCEEDED", 3, "full")
+    assert ledger == ("SUCCEEDED", 3, "full", correlation_id)

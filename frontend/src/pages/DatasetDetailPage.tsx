@@ -1,4 +1,4 @@
-import { ArrowLeft, Database, Droplets, GitCompareArrows } from "lucide-react";
+import { ArrowLeft, Database, Droplets, GitCompareArrows, Upload } from "lucide-react";
 import { useCallback, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api } from "../api/client";
@@ -11,6 +11,7 @@ import { StatusBadge } from "../components/StatusBadge";
 import { useApi } from "../hooks/useApi";
 import type {
   DatasetSummary,
+  DatasetUploadCapability,
   DatasetWatermarkResponse,
   QualitySummary,
   RunDetail,
@@ -26,6 +27,7 @@ interface DatasetDetailData {
   quality: QualitySummary[];
   drift: SchemaDriftEvent[];
   watermark: DatasetWatermarkResponse;
+  uploadCapability: DatasetUploadCapability;
 }
 
 const tabs: { id: Tab; label: string }[] = [
@@ -40,14 +42,29 @@ export function DatasetDetailPage() {
   const { dataset = "" } = useParams();
   const [tab, setTab] = useState<Tab>("overview");
   const loader = useCallback(async (): Promise<DatasetDetailData> => {
-    const [detail, runs, quality, drift, watermark] = await Promise.all([
+    const [detail, runs, quality, drift, watermark, uploadCapability] = await Promise.all([
       api.dataset(dataset),
       api.datasetRuns(dataset),
       api.datasetQuality(dataset),
       api.datasetSchemaDrift(dataset),
       api.datasetWatermark(dataset),
+      api.datasetUploadCapability(dataset).catch(() => null),
     ]);
-    return { detail, runs, quality, drift, watermark };
+    return {
+      detail,
+      runs,
+      quality,
+      drift,
+      watermark,
+      uploadCapability: uploadCapability ?? {
+        dataset,
+        source_type: detail.source_type ?? "unknown",
+        load_strategy: detail.load_strategy ?? "unknown",
+        config_approved: false,
+        upload_eligible: false,
+        reason: "Operational upload is not available for this dataset.",
+      },
+    };
   }, [dataset]);
   const { data, error, loading, reload } = useApi(loader);
 
@@ -61,7 +78,17 @@ export function DatasetDetailPage() {
         eyebrow="Dataset detail"
         title={dataset}
         description="Current operational state, execution history, quality, schema, and watermark metadata."
-        action={data ? <StatusBadge status={data.detail.health_status} /> : undefined}
+        action={data ? (
+          <div className="flex flex-wrap items-center gap-3">
+            <StatusBadge status={data.detail.health_status} />
+            {data.uploadCapability.upload_eligible && (
+              <Link className="primary-button" to={`/datasets/${encodeURIComponent(dataset)}/upload`}>
+                <Upload className="h-4 w-4" aria-hidden="true" />
+                Upload new data
+              </Link>
+            )}
+          </div>
+        ) : undefined}
       />
       {loading && <LoadingState label={`Loading ${dataset}`} />}
       {error && <ErrorState message={error} onRetry={reload} />}
@@ -90,6 +117,9 @@ export function DatasetDetailPage() {
           <section id={`dataset-${tab}`} role="tabpanel" tabIndex={0}>
             {tab === "overview" && (
               <div className="space-y-6">
+                {!data.uploadCapability.upload_eligible && data.uploadCapability.reason && (
+                  <div className="info-panel" role="note">{data.uploadCapability.reason}</div>
+                )}
                 <DetailGrid
                   items={[
                     { label: "Health", value: <StatusBadge status={data.detail.health_status} /> },

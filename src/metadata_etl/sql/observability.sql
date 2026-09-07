@@ -48,7 +48,8 @@ SELECT
     watermark_before,
     watermark_after,
     git_commit_sha,
-    config_hash
+    config_hash,
+    correlation_id
 FROM etl_meta.etl_run_ledger;
 
 CREATE OR REPLACE VIEW etl_observability.dataset_health AS

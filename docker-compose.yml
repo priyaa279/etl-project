@@ -73,11 +73,23 @@ services:
     environment:
       ETL_POSTGRES_DSN: postgresql://${ETL_DB_USER:-etl}:${ETL_DB_PASSWORD}@postgres:5432/${ETL_DB_NAME:-etl}
       ETL_API_CORS_ORIGINS: ${ETL_API_CORS_ORIGINS:-http://localhost:5173,http://localhost:4173}
+      ETL_CONTROL_OPERATIONS_ENABLED: ${ETL_CONTROL_OPERATIONS_ENABLED:-false}
+      ETL_CONFIG_DIR: /app/configs
+      ETL_UPLOAD_ROOT: /app/data/uploads
+      ETL_AIRFLOW_UPLOAD_ROOT: /opt/airflow/data/uploads
+      ETL_UPLOAD_MAX_BYTES: ${ETL_UPLOAD_MAX_BYTES:-104857600}
+      AIRFLOW_API_BASE_URL: ${AIRFLOW_API_BASE_URL:-http://airflow-api-server:8080}
+      AIRFLOW_API_USERNAME: ${AIRFLOW_API_USERNAME:-}
+      AIRFLOW_API_PASSWORD: ${AIRFLOW_API_PASSWORD:-}
+      AIRFLOW_API_TOKEN: ${AIRFLOW_API_TOKEN:-}
     ports:
       - "8000:8000"
     depends_on:
       postgres:
         condition: service_healthy
+    volumes:
+      - ./configs:/app/configs:ro
+      - ./data:/app/data
     healthcheck:
       test:
         [

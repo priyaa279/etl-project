@@ -72,6 +72,7 @@ class RunDetail(BaseModel):
     watermark_after: str | None
     git_commit_sha: str
     config_hash: str
+    correlation_id: str | None = None
 
 
 class QualitySummary(BaseModel):
@@ -136,3 +137,47 @@ class WatermarkState(BaseModel):
 class DatasetWatermarkResponse(BaseModel):
     dataset: str
     watermark: WatermarkState | None
+
+
+class DatasetUploadCapability(BaseModel):
+    dataset: str
+    source_type: str
+    load_strategy: str
+    config_approved: bool
+    upload_eligible: bool
+    reason: str | None
+
+
+class OperationRunSummary(BaseModel):
+    run_id: str
+    status: str
+    started_at: datetime
+    completed_at: datetime | None
+    duration_seconds: float | None
+    rows_extracted: int | None
+    rows_transformed: int | None
+    rows_contract_passed: int | None
+    rows_quarantined: int | None
+    rows_loaded: int | None
+    drift_status: str | None
+
+
+class UploadOperation(BaseModel):
+    upload_id: str
+    dataset: str
+    original_filename: str
+    source_type: str
+    size_bytes: int
+    sha256: str
+    status: str
+    uploaded_at: datetime
+    validated_at: datetime | None = None
+    triggered_at: datetime | None = None
+    airflow_dag_id: str | None = None
+    airflow_run_id: str | None = None
+    airflow_state: str | None = None
+    etl_run_id: str | None = None
+    completed_at: datetime | None = None
+    safe_error: str | None = None
+    preflight_result: dict[str, object] | None = None
+    etl_run: OperationRunSummary | None = None

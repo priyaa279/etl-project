@@ -70,6 +70,15 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("config", type=Path)
     run.add_argument("--from", dest="backfill_from", help="Exclusive backfill lower boundary")
     run.add_argument("--to", dest="backfill_to", help="Inclusive backfill upper boundary")
+    run.add_argument(
+        "--source-override",
+        type=Path,
+        help="Use one controlled file artifact without changing the approved YAML",
+    )
+    run.add_argument(
+        "--correlation-id",
+        help="Associate this execution with an external operation request",
+    )
 
     profile = subparsers.add_parser("profile", help="Profile a CSV and propose a starter config")
     profile.add_argument("source", type=Path)
@@ -262,6 +271,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.config,
                 backfill_from=args.backfill_from,
                 backfill_to=args.backfill_to,
+                source_override=args.source_override,
+                correlation_id=args.correlation_id,
             )
             print(json.dumps(result.to_dict(), indent=2))
             return 0

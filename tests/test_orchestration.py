@@ -114,6 +114,32 @@ def test_airflow_cli_runner_propagates_nonzero_status(
     assert failure.value.returncode == 2
 
 
+def test_airflow_cli_runner_passes_optional_upload_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _write_config(tmp_path, dataset="upload_data", enabled=True)
+    captured: list[str] = []
+
+    def capture(command: list[str], **_values: object) -> None:
+        captured.extend(command)
+
+    monkeypatch.setattr(subprocess, "run", capture)
+
+    run_cli_stage(
+        "run",
+        config,
+        source_override="/opt/airflow/data/uploads/upload/artifact.csv",
+        correlation_id="upload-123",
+    )
+
+    assert captured[-4:] == [
+        "--source-override",
+        "/opt/airflow/data/uploads/upload/artifact.csv",
+        "--correlation-id",
+        "upload-123",
+    ]
+
+
 def test_validate_all_checks_top_level_configs_and_ignores_drafts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

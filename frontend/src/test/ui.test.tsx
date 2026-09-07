@@ -8,7 +8,14 @@ import { DatasetDetailPage } from "../pages/DatasetDetailPage";
 import { DatasetsPage } from "../pages/DatasetsPage";
 import { OverviewPage } from "../pages/OverviewPage";
 import { RunDetailPage } from "../pages/RunDetailPage";
-import type { DatasetSummary, Overview, RunDetail } from "../types/api";
+import { UploadPage } from "../pages/UploadPage";
+import type {
+  DatasetSummary,
+  DatasetUploadCapability,
+  Overview,
+  RunDetail,
+  UploadOperation,
+} from "../types/api";
 import { formatLabel, shortRunId } from "../utils/format";
 
 const dataset: DatasetSummary = {
@@ -70,6 +77,36 @@ const overview: Overview = {
   total_rows_loaded: 120,
   total_rows_quarantined: 5,
   datasets_with_drift_warnings: 2,
+};
+
+const capability: DatasetUploadCapability = {
+  dataset: "customers",
+  source_type: "csv",
+  load_strategy: "full",
+  config_approved: true,
+  upload_eligible: true,
+  reason: null,
+};
+
+const uploadOperation: UploadOperation = {
+  upload_id: "upload-123",
+  dataset: "customers",
+  original_filename: "customers_new.csv",
+  source_type: "csv",
+  size_bytes: 128,
+  sha256: "a".repeat(64),
+  status: "UPLOADED",
+  uploaded_at: "2026-09-07T10:00:00Z",
+  validated_at: null,
+  triggered_at: null,
+  airflow_dag_id: null,
+  airflow_run_id: null,
+  airflow_state: null,
+  etl_run_id: null,
+  completed_at: null,
+  safe_error: null,
+  preflight_result: null,
+  etl_run: null,
 };
 
 function renderAt(element: React.ReactNode, path = "/") {
@@ -159,6 +196,7 @@ it("renders dataset detail and a clean empty watermark state", async () => {
   vi.spyOn(api, "datasetQuality").mockResolvedValue([]);
   vi.spyOn(api, "datasetSchemaDrift").mockResolvedValue([]);
   vi.spyOn(api, "datasetWatermark").mockResolvedValue({ dataset: "customers", watermark: null });
+  vi.spyOn(api, "datasetUploadCapability").mockResolvedValue(capability);
   const user = userEvent.setup();
 
   renderAt(
@@ -169,8 +207,213 @@ it("renders dataset detail and a clean empty watermark state", async () => {
   );
 
   expect(await screen.findByRole("heading", { name: "customers" })).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Upload new data" })).toBeInTheDocument();
   await user.click(screen.getByRole("tab", { name: "Watermark" }));
   expect(screen.getByText("No watermark exists for this dataset")).toBeInTheDocument();
+});
+
+it("shows a non-error explanation instead of upload for PostgreSQL sources", async () => {
+  vi.spyOn(api, "dataset").mockResolvedValue({ ...dataset, source_type: "postgres" });
+  vi.spyOn(api, "datasetRuns").mockResolvedValue([run]);
+  vi.spyOn(api, "datasetQuality").mockResolvedValue([]);
+  vi.spyOn(api, "datasetSchemaDrift").mockResolvedValue([]);
+  vi.spyOn(api, "datasetWatermark").mockResolvedValue({ dataset: "customers", watermark: null });
+  vi.spyOn(api, "datasetUploadCapability").mockResolvedValue({
+    ...capability,
+    source_type: "postgres",
+    upload_eligible: false,
+    reason: "This dataset reads from PostgreSQL and does not accept file uploads.",
+  });
+
+  renderAt(
+    <Routes><Route path="/datasets/:dataset" element={<DatasetDetailPage />} /></Routes>,
+    "/datasets/customers",
+  );
+
+  expect(await screen.findByText(/does not accept file uploads/i)).toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "Upload new data" })).not.toBeInTheDocument();
+});
+
+it("keeps read-only dataset detail available when upload capability is unavailable", async () => {
+  vi.spyOn(api, "dataset").mockResolvedValue(dataset);
+  vi.spyOn(api, "datasetRuns").mockResolvedValue([run]);
+  vi.spyOn(api, "datasetQuality").mockResolvedValue([]);
+  vi.spyOn(api, "datasetSchemaDrift").mockResolvedValue([]);
+  vi.spyOn(api, "datasetWatermark").mockResolvedValue({ dataset: "customers", watermark: null });
+  vi.spyOn(api, "datasetUploadCapability").mockRejectedValue(new Error("Not configured"));
+
+  renderAt(
+    <Routes><Route path="/datasets/:dataset" element={<DatasetDetailPage />} /></Routes>,
+    "/datasets/customers",
+  );
+
+  expect(await screen.findByRole("heading", { name: "customers" })).toBeInTheDocument();
+  expect(screen.getByText("Operational upload is not available for this dataset.")).toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "Upload new data" })).not.toBeInTheDocument();
+  expect(screen.getByRole("tab", { name: "Runs" })).toBeInTheDocument();
+});
+
+it("selects, uploads, validates READY, and triggers an existing dataset run", async () => {
+  vi.spyOn(api, "datasetUploadCapability").mockResolvedValue(capability);
+  vi.spyOn(api, "upload").mockResolvedValue(uploadOperation);
+  vi.spyOn(api, "validateUpload").mockResolvedValue({
+    ...uploadOperation,
+    status: "READY",
+    validated_at: "2026-09-07T10:00:01Z",
+    preflight_result: {
+      status: "READY",
+      config_approved: true,
+      source_valid: true,
+      canonical_compatible: true,
+      drift: { detected: false, status: "NONE", events: [] },
+    },
+  });
+  vi.spyOn(api, "runUpload").mockResolvedValue({
+    ...uploadOperation,
+    status: "QUEUED",
+    validated_at: "2026-09-07T10:00:01Z",
+    triggered_at: "2026-09-07T10:00:02Z",
+    airflow_state: "QUEUED",
+    preflight_result: {
+      status: "READY",
+      config_approved: true,
+      source_valid: true,
+      canonical_compatible: true,
+      drift: { detected: false, status: "NONE", events: [] },
+    },
+  });
+  const user = userEvent.setup();
+  renderAt(
+    <Routes><Route path="/datasets/:dataset/upload" element={<UploadPage />} /></Routes>,
+    "/datasets/customers/upload",
+  );
+
+  const input = await screen.findByLabelText(/choose csv file/i);
+  await user.upload(input, new File(["a,b\n1,2"], "customers_new.csv", { type: "text/csv" }));
+  expect(screen.getByText("customers_new.csv")).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Upload file" }));
+  await user.click(await screen.findByRole("button", { name: /validate/i }));
+  expect(await screen.findByText("Ready to run")).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Run ETL" }));
+  expect((await screen.findAllByLabelText("Status: QUEUED")).length).toBeGreaterThan(0);
+});
+
+it.each(["WARNING", "BLOCKED"] as const)("renders a %s preflight safely", async (status) => {
+  vi.spyOn(api, "datasetUploadCapability").mockResolvedValue(capability);
+  vi.spyOn(api, "upload").mockResolvedValue(uploadOperation);
+  vi.spyOn(api, "validateUpload").mockResolvedValue({
+    ...uploadOperation,
+    status,
+    validated_at: "2026-09-07T10:00:01Z",
+    preflight_result: {
+      status,
+      config_approved: true,
+      source_valid: true,
+      canonical_compatible: status !== "BLOCKED",
+      drift: {
+        detected: true,
+        status: status === "WARNING" ? "WARN" : "FAILED",
+        events: [{ type: "column_added", description: "Added column: phone", policy: status === "WARNING" ? "warn" : "fail", action: status === "WARNING" ? "WARNED" : "FAILED" }],
+      },
+    },
+  });
+  const user = userEvent.setup();
+  renderAt(
+    <Routes><Route path="/datasets/:dataset/upload" element={<UploadPage />} /></Routes>,
+    "/datasets/customers/upload",
+  );
+  await user.upload(await screen.findByLabelText(/choose csv file/i), new File(["x"], "batch.csv"));
+  await user.click(screen.getByRole("button", { name: "Upload file" }));
+  await user.click(await screen.findByRole("button", { name: /validate/i }));
+
+  expect(await screen.findByLabelText(`Status: ${status}`)).toBeInTheDocument();
+  if (status === "BLOCKED") {
+    expect(screen.queryByRole("button", { name: "Run ETL" })).not.toBeInTheDocument();
+  } else {
+    expect(screen.getByRole("button", { name: "Run ETL" })).toBeInTheDocument();
+  }
+});
+
+it("shows a successful correlated result and links to existing run detail", async () => {
+  vi.spyOn(api, "datasetUploadCapability").mockResolvedValue(capability);
+  const succeeded: UploadOperation = {
+    ...uploadOperation,
+    status: "SUCCEEDED",
+    validated_at: "2026-09-07T10:00:01Z",
+    triggered_at: "2026-09-07T10:00:02Z",
+    airflow_state: "SUCCESS",
+    etl_run_id: "RUN_EXACT",
+    preflight_result: { status: "READY", config_approved: true, source_valid: true, canonical_compatible: true, drift: { detected: false, status: "NONE", events: [] } },
+    etl_run: { run_id: "RUN_EXACT", status: "SUCCEEDED", started_at: "2026-09-07T10:00:02Z", completed_at: "2026-09-07T10:00:03Z", duration_seconds: 1, rows_extracted: 4, rows_transformed: 3, rows_contract_passed: 3, rows_quarantined: 1, rows_loaded: 3, drift_status: "NONE" },
+  };
+  vi.spyOn(api, "upload").mockResolvedValue(succeeded);
+  const user = userEvent.setup();
+  renderAt(<Routes><Route path="/datasets/:dataset/upload" element={<UploadPage />} /></Routes>, "/datasets/customers/upload");
+  await user.upload(await screen.findByLabelText(/choose csv file/i), new File(["x"], "batch.csv"));
+  await user.click(screen.getByRole("button", { name: "Upload file" }));
+
+  expect((await screen.findAllByLabelText("Status: SUCCEEDED")).length).toBeGreaterThan(0);
+  expect(screen.getByRole("link", { name: "View Run Details" })).toHaveAttribute("href", "/runs/RUN_EXACT");
+  expect(screen.getByText("Quarantined")).toBeInTheDocument();
+});
+
+it("renders a running upload monitor without invented progress", async () => {
+  vi.spyOn(api, "datasetUploadCapability").mockResolvedValue(capability);
+  vi.spyOn(api, "upload").mockResolvedValue({
+    ...uploadOperation,
+    status: "RUNNING",
+    triggered_at: "2026-09-07T10:00:02Z",
+    airflow_state: "RUNNING",
+  });
+  const user = userEvent.setup();
+  renderAt(
+    <Routes><Route path="/datasets/:dataset/upload" element={<UploadPage />} /></Routes>,
+    "/datasets/customers/upload",
+  );
+  await user.upload(
+    await screen.findByLabelText(/choose csv file/i),
+    new File(["x"], "batch.csv"),
+  );
+  await user.click(screen.getByRole("button", { name: "Upload file" }));
+
+  expect((await screen.findAllByLabelText("Status: RUNNING")).length).toBeGreaterThan(0);
+  expect(screen.getByText("Checking every few seconds")).toBeInTheDocument();
+  expect(screen.queryByText(/%/)).not.toBeInTheDocument();
+});
+
+it("renders a safe failed result", async () => {
+  vi.spyOn(api, "datasetUploadCapability").mockResolvedValue(capability);
+  vi.spyOn(api, "upload").mockResolvedValue({
+    ...uploadOperation,
+    status: "FAILED",
+    triggered_at: "2026-09-07T10:00:02Z",
+    airflow_state: "FAILED",
+    safe_error: "The ETL run failed safely.",
+  });
+  const user = userEvent.setup();
+  renderAt(
+    <Routes><Route path="/datasets/:dataset/upload" element={<UploadPage />} /></Routes>,
+    "/datasets/customers/upload",
+  );
+  await user.upload(
+    await screen.findByLabelText(/choose csv file/i),
+    new File(["x"], "batch.csv"),
+  );
+  await user.click(screen.getByRole("button", { name: "Upload file" }));
+
+  expect((await screen.findAllByLabelText("Status: FAILED")).length).toBeGreaterThan(0);
+  expect(screen.getByText("The ETL run failed safely.")).toBeInTheDocument();
+});
+
+it("shows a safe upload API error", async () => {
+  vi.spyOn(api, "datasetUploadCapability").mockResolvedValue(capability);
+  vi.spyOn(api, "upload").mockRejectedValue(new Error("Operational actions are disabled."));
+  const user = userEvent.setup();
+  renderAt(<Routes><Route path="/datasets/:dataset/upload" element={<UploadPage />} /></Routes>, "/datasets/customers/upload");
+  await user.upload(await screen.findByLabelText(/choose csv file/i), new File(["x"], "batch.csv"));
+  await user.click(screen.getByRole("button", { name: "Upload file" }));
+
+  expect(await screen.findByRole("alert")).toHaveTextContent("Operational actions are disabled.");
 });
 
 it("renders run detail row flow and technical metadata", async () => {

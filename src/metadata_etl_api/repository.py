@@ -140,6 +140,28 @@ class ObservabilityRepository:
             (run_id,),
         )
 
+    def run_by_correlation(self, correlation_id: str) -> dict[str, Any] | None:
+        return self._fetch_one(
+            "SELECT * FROM etl_observability.pipeline_runs WHERE correlation_id = %s",
+            (correlation_id,),
+        )
+
+    def schema_baseline(self, dataset: str) -> tuple[str | None, str | None]:
+        row = self._fetch_one(
+            """
+            SELECT raw_schema_json, canonical_schema_json
+            FROM etl_meta.etl_run_ledger
+            WHERE dataset = %s AND status = 'SUCCEEDED'
+              AND raw_schema_json IS NOT NULL AND canonical_schema_json IS NOT NULL
+            ORDER BY finished_at DESC
+            LIMIT 1
+            """,
+            (dataset,),
+        )
+        if row is None:
+            return None, None
+        return row["raw_schema_json"], row["canonical_schema_json"]
+
     def run_quality(self, run_id: str) -> list[dict[str, Any]]:
         return self._fetch_all(
             """

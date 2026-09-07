@@ -35,21 +35,29 @@ commands; its separate setup and smoke-test instructions appear below.
 
 ## Application UI
 
-Milestone 10A adds a read-only operational application without changing ETL processing:
+Milestone 10B preserves the read-only monitoring application and adds a gated operation for an
+existing, approved file-based dataset:
 
 ```text
-React + TypeScript frontend
-          ↓
-FastAPI application API
-          ↓
-PostgreSQL etl_observability views
-          ↓
-Existing ETL metadata
+Existing approved dataset -> upload -> preflight -> explicit run
+        React controls -> FastAPI operation layer -> Airflow orchestrates
+        -> existing ETL CLI processes -> observability reports the exact run
 ```
 
 The **ETL Control Center** includes Overview, Datasets, Runs, Data Quality, Schema Drift, and
-Watermarks pages, plus dataset and run detail views. The browser cannot connect to PostgreSQL,
-execute the ETL CLI, invoke Airflow, read YAML, or access row-level quarantine values.
+Watermarks pages, plus dataset and run detail views. Eligible Dataset Detail pages now link to
+**Upload new data**. PostgreSQL-source datasets clearly show that file upload is not applicable.
+There is no new-dataset or config-editing workflow.
+
+Operational writes are disabled by default. Set `ETL_CONTROL_OPERATIONS_ENABLED=true` only in a
+trusted local environment, configure server-side Airflow authentication, and restart the API.
+The browser never receives PostgreSQL or Airflow credentials, server paths, raw records, or
+row-level quarantine values.
+
+The upload landing area is temporary application input, not ETL evidence. Once Airflow invokes the
+CLI with `--source-override`, the normal connector preserves a separate immutable raw artifact.
+Preflight is also only a preview: the real ETL run recalculates schema drift and enforces the
+approved policy before publishing.
 
 Start the integrated application using the root `.env` configuration:
 
@@ -58,12 +66,12 @@ docker compose up -d --build
 ```
 
 - Frontend: `http://localhost:4173`
-- Read-only API: `http://localhost:8000`
+- Application API: `http://localhost:8000`
 - API health: `http://localhost:8000/api/health`
 - Airflow: `http://localhost:8080`
 
 For separate frontend/API development commands, endpoint details, privacy boundaries, and the
-future 10B/10C architecture, see
+10A/10B boundaries and the future 10C architecture, see
 [frontend architecture](docs/frontend_architecture.md).
 
 ## Portfolio proof
@@ -670,7 +678,9 @@ docker compose ps
 
 Airflow is available at `http://localhost:8080`. Its development Simple Auth Manager password is
 generated in the Git-ignored `airflow/config` directory. Configs are mounted read-only, while raw
-data and Airflow logs use host-mounted, Git-ignored runtime directories. Manual containerized CLI
+data, upload landing storage, and Airflow logs use host-mounted, Git-ignored runtime directories.
+The API writes `data/uploads`; Airflow sees the same files read-only by convention through its
+existing `data` mount. Uploaded files are never served by Nginx. Manual containerized CLI
 usage remains available through the tools profile:
 
 ```bash

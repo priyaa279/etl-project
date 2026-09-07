@@ -101,11 +101,18 @@ def validate_all_configs(
     return tuple(validated)
 
 
-def run_cli_stage(stage: str, config_path: str | Path) -> None:
+def run_cli_stage(
+    stage: str,
+    config_path: str | Path,
+    source_override: str | None = None,
+    correlation_id: str | None = None,
+) -> None:
     """Run the same CLI entry point used outside Airflow and propagate its exit status."""
     if stage not in {"validate", "run"}:
         raise ValueError(f"Unsupported orchestration stage: {stage}")
-    subprocess.run(
-        [sys.executable, "-m", "metadata_etl.cli", stage, str(Path(config_path).resolve())],
-        check=True,
-    )
+    command = [sys.executable, "-m", "metadata_etl.cli", stage, str(Path(config_path).resolve())]
+    if stage == "run" and source_override:
+        command.extend(["--source-override", source_override])
+    if stage == "run" and correlation_id:
+        command.extend(["--correlation-id", correlation_id])
+    subprocess.run(command, check=True)

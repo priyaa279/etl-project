@@ -27,6 +27,9 @@ const SchemaDriftPage = lazy(() =>
 const WatermarksPage = lazy(() =>
   import("./pages/WatermarksPage").then((module) => ({ default: module.WatermarksPage })),
 );
+const UploadPage = lazy(() =>
+  import("./pages/UploadPage").then((module) => ({ default: module.UploadPage })),
+);
 
 export function App() {
   return (
@@ -36,6 +39,7 @@ export function App() {
           <Route index element={<OverviewPage />} />
           <Route path="datasets" element={<DatasetsPage />} />
           <Route path="datasets/:dataset" element={<DatasetDetailPage />} />
+          <Route path="datasets/:dataset/upload" element={<UploadPage />} />
           <Route path="runs" element={<RunsPage />} />
           <Route path="runs/:runId" element={<RunDetailPage />} />
           <Route path="quality" element={<QualityPage />} />

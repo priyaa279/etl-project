@@ -73,6 +73,9 @@ class PostgresStore:
 
     def ensure_metadata_tables(self) -> None:
         with self.conn.transaction():
+            self.conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext('metadata_etl_schema_bootstrap'))"
+            )
             self.conn.execute("CREATE SCHEMA IF NOT EXISTS etl_meta")
             self.conn.execute(
                 """
@@ -108,6 +111,7 @@ class PostgresStore:
                     backfill_to TEXT,
                     rows_expired BIGINT,
                     rows_history_inserted BIGINT,
+                    correlation_id TEXT,
                     duration_seconds DOUBLE PRECISION,
                     error_message TEXT
                 )
@@ -138,10 +142,15 @@ class PostgresStore:
                 "backfill_to TEXT",
                 "rows_expired BIGINT",
                 "rows_history_inserted BIGINT",
+                "correlation_id TEXT",
             ):
                 self.conn.execute(
                     f"ALTER TABLE etl_meta.etl_run_ledger ADD COLUMN IF NOT EXISTS {definition}"
                 )
+            self.conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS etl_run_ledger_correlation_id_uq "
+                "ON etl_meta.etl_run_ledger (correlation_id) WHERE correlation_id IS NOT NULL"
+            )
             self.conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS etl_meta.data_quality_results (
@@ -217,6 +226,7 @@ class PostgresStore:
         run_mode: str = "normal",
         backfill_from: str | None = None,
         backfill_to: str | None = None,
+        correlation_id: str | None = None,
     ) -> None:
         with self.conn.transaction():
             self.conn.execute(
@@ -224,8 +234,8 @@ class PostgresStore:
                 INSERT INTO etl_meta.etl_run_ledger (
                     run_id, dataset, config_schema_version, config_hash,
                     git_commit_sha, status, started_at, source_type, load_strategy,
-                    run_mode, backfill_from, backfill_to
-                ) VALUES (%s, %s, %s, %s, %s, 'RUNNING', %s, %s, %s, %s, %s, %s)
+                    run_mode, backfill_from, backfill_to, correlation_id
+                ) VALUES (%s, %s, %s, %s, %s, 'RUNNING', %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     run_id,
@@ -239,6 +249,7 @@ class PostgresStore:
                     run_mode,
                     backfill_from,
                     backfill_to,
+                    correlation_id,
                 ),
             )
 

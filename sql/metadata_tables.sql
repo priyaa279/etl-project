@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS etl_meta.etl_run_ledger (
     backfill_to TEXT,
     rows_expired BIGINT,
     rows_history_inserted BIGINT,
+    correlation_id TEXT,
     duration_seconds DOUBLE PRECISION,
     error_message TEXT
 );
@@ -58,6 +59,41 @@ ALTER TABLE etl_meta.etl_run_ledger ADD COLUMN IF NOT EXISTS backfill_from TEXT;
 ALTER TABLE etl_meta.etl_run_ledger ADD COLUMN IF NOT EXISTS backfill_to TEXT;
 ALTER TABLE etl_meta.etl_run_ledger ADD COLUMN IF NOT EXISTS rows_expired BIGINT;
 ALTER TABLE etl_meta.etl_run_ledger ADD COLUMN IF NOT EXISTS rows_history_inserted BIGINT;
+ALTER TABLE etl_meta.etl_run_ledger ADD COLUMN IF NOT EXISTS correlation_id TEXT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS etl_run_ledger_correlation_id_uq
+    ON etl_meta.etl_run_ledger (correlation_id)
+    WHERE correlation_id IS NOT NULL;
+
+CREATE SCHEMA IF NOT EXISTS etl_app;
+
+CREATE TABLE IF NOT EXISTS etl_app.upload_sessions (
+    upload_id TEXT PRIMARY KEY,
+    correlation_id TEXT NOT NULL UNIQUE,
+    dataset TEXT NOT NULL,
+    original_filename TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    size_bytes BIGINT NOT NULL,
+    sha256 TEXT NOT NULL,
+    landing_key TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL CHECK (status IN (
+        'UPLOADED', 'VALIDATING', 'READY', 'WARNING', 'BLOCKED',
+        'TRIGGERING', 'QUEUED', 'RUNNING', 'SUCCEEDED', 'FAILED'
+    )),
+    uploaded_at TIMESTAMPTZ NOT NULL,
+    validated_at TIMESTAMPTZ,
+    preflight_result JSONB,
+    triggered_at TIMESTAMPTZ,
+    airflow_dag_id TEXT,
+    airflow_run_id TEXT UNIQUE,
+    airflow_state TEXT,
+    etl_run_id TEXT,
+    completed_at TIMESTAMPTZ,
+    safe_error TEXT
+);
+
+CREATE INDEX IF NOT EXISTS upload_sessions_dataset_uploaded_idx
+    ON etl_app.upload_sessions (dataset, uploaded_at DESC);
 
 CREATE TABLE IF NOT EXISTS etl_meta.data_quality_results (
     run_id TEXT NOT NULL,

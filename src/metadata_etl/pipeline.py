@@ -14,7 +14,7 @@ from typing import Any
 
 import duckdb
 
-from metadata_etl.config import ETLConfig, load_config
+from metadata_etl.config import ETLConfig, load_config, with_source_override
 from metadata_etl.connectors import ExtractedSource, default_connector_registry
 from metadata_etl.errors import ETLError, ExtractionError, SchemaDriftError
 from metadata_etl.postgres import LoadMetrics, PostgresStore
@@ -57,6 +57,7 @@ class RunResult:
     backfill_from: str | None
     backfill_to: str | None
     duration_seconds: float
+    correlation_id: str | None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -214,9 +215,13 @@ def run_pipeline(
     *,
     backfill_from: str | None = None,
     backfill_to: str | None = None,
+    source_override: str | Path | None = None,
+    correlation_id: str | None = None,
 ) -> RunResult:
     """Execute an approved source configuration through the generic ETL runtime."""
     config = load_config(config_path)
+    if source_override is not None:
+        config = with_source_override(config, source_override)
     emit_event(
         "CONFIG_VALIDATED",
         dataset=config.dataset,
@@ -267,6 +272,7 @@ def run_pipeline(
             run_mode=run_mode,
             backfill_from=backfill_from,
             backfill_to=backfill_to,
+            correlation_id=correlation_id,
         )
         emit_event(
             "RUN_STARTED",
@@ -522,4 +528,5 @@ def run_pipeline(
         backfill_from=backfill_from,
         backfill_to=backfill_to,
         duration_seconds=duration,
+        correlation_id=correlation_id,
     )

@@ -60,6 +60,7 @@ export interface RunDetail {
   watermark_after: string | null;
   git_commit_sha: string;
   config_hash: string;
+  correlation_id?: string | null;
 }
 
 export interface QualitySummary {
@@ -124,4 +125,73 @@ export interface WatermarkState {
 export interface DatasetWatermarkResponse {
   dataset: string;
   watermark: WatermarkState | null;
+}
+
+export interface DatasetUploadCapability {
+  dataset: string;
+  source_type: string;
+  load_strategy: string;
+  config_approved: boolean;
+  upload_eligible: boolean;
+  reason: string | null;
+}
+
+export interface PreflightEvent {
+  type: string;
+  description: string;
+  policy: string;
+  action: string;
+}
+
+export interface PreflightResult {
+  status: "READY" | "WARNING" | "BLOCKED";
+  config_approved: boolean;
+  source_valid: boolean;
+  canonical_compatible: boolean;
+  message?: string;
+  schema?: {
+    raw_hash: string;
+    canonical_hash: string;
+    fields: { name: string; datatype: string }[];
+  };
+  drift: {
+    detected: boolean;
+    status: string;
+    events: PreflightEvent[];
+  };
+}
+
+export interface OperationRunSummary {
+  run_id: string;
+  status: string;
+  started_at: string;
+  completed_at: string | null;
+  duration_seconds: number | null;
+  rows_extracted: number | null;
+  rows_transformed: number | null;
+  rows_contract_passed: number | null;
+  rows_quarantined: number | null;
+  rows_loaded: number | null;
+  drift_status: string | null;
+}
+
+export interface UploadOperation {
+  upload_id: string;
+  dataset: string;
+  original_filename: string;
+  source_type: string;
+  size_bytes: number;
+  sha256: string;
+  status: string;
+  uploaded_at: string;
+  validated_at: string | null;
+  triggered_at: string | null;
+  airflow_dag_id: string | null;
+  airflow_run_id: string | null;
+  airflow_state: string | null;
+  etl_run_id: string | null;
+  completed_at: string | null;
+  safe_error: string | null;
+  preflight_result: PreflightResult | null;
+  etl_run: OperationRunSummary | null;
 }

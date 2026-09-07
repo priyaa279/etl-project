@@ -245,6 +245,92 @@ select:focus-visible {
   cursor: pointer;
 }
 
+.primary-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  border: 1px solid #0e7490;
+  border-radius: 0.55rem;
+  background: #0e7490;
+  padding: 0.55rem 0.85rem;
+  color: white;
+  font-size: 0.875rem;
+  font-weight: 750;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.primary-button:hover { background: #155e75; }
+.primary-button:disabled { cursor: wait; opacity: 0.65; }
+
+.info-panel,
+.blocked-panel {
+  border: 1px solid #bae6fd;
+  border-radius: 0.75rem;
+  background: #f0f9ff;
+  padding: 1rem;
+  color: #0c4a6e;
+  font-size: 0.9rem;
+}
+
+.blocked-panel {
+  border-color: #fecdd3;
+  background: #fff1f2;
+  color: #881337;
+  font-weight: 650;
+}
+
+.workflow-steps {
+  display: flex;
+  gap: 0.5rem;
+  overflow-x: auto;
+  margin: 0 0 1.5rem;
+  padding: 0 0 0.25rem;
+  list-style: none;
+}
+
+.workflow-step {
+  display: flex;
+  flex: 1 0 8rem;
+  align-items: center;
+  gap: 0.55rem;
+  color: #64748b;
+  font-size: 0.8rem;
+  font-weight: 750;
+}
+
+.workflow-step > span {
+  display: grid;
+  width: 1.8rem;
+  height: 1.8rem;
+  place-items: center;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  background: white;
+}
+
+.workflow-step-complete { color: #0e7490; }
+.workflow-step-complete > span { border-color: #67e8f9; background: #ecfeff; }
+
+.file-picker {
+  display: flex;
+  min-height: 9rem;
+  cursor: pointer;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.55rem;
+  border: 1px dashed #94a3b8;
+  border-radius: 0.8rem;
+  background: #f8fafc;
+}
+
+.file-picker:hover { border-color: #0891b2; background: #f0fdfa; }
+.file-picker input { max-width: min(100%, 22rem); font-size: 0.85rem; }
+
+.event-list { display: grid; gap: 0.65rem; padding: 0; list-style: none; }
+.event-list li { display: grid; gap: 0.2rem; border-left: 3px solid #f59e0b; padding: 0.5rem 0.75rem; color: #475569; font-size: 0.85rem; }
+
 .secondary-button:hover {
   border-color: #94a3b8;
   background: #f8fafc;
