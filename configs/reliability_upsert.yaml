@@ -1,0 +1,59 @@
+config_schema_version: "1.0"
+
+dataset:
+  name: reliability_entities
+
+review:
+  required: true
+  approved: true
+  approved_by: priyaa
+
+source:
+  type: csv
+  path: data/incoming/reliability_entities.csv
+  options:
+    delimiter: ","
+
+runtime:
+  raw_root: data/raw
+
+normalization:
+  trim_strings: true
+  null_tokens: ["", "NULL"]
+
+columns:
+  entity_id:
+    source: Entity ID
+    type: string
+    nullable: false
+  display_name:
+    source: Display Name
+    type: string
+    nullable: false
+  status:
+    source: Status
+    type: string
+    nullable: false
+
+transformations: []
+contracts:
+  - id: DQ001
+    type: not_null
+    column: entity_id
+  - id: DQ002
+    type: unique
+    columns: [entity_id]
+
+schema_drift:
+  added_columns: warn
+  removed_columns: fail
+  datatype_change: fail
+  canonical_change: fail
+
+load:
+  strategy: upsert
+  keys: [entity_id]
+  connection_env: ETL_POSTGRES_DSN
+  schema: public
+  staging_table: reliability_entities_staging
+  target_table: reliability_entities

@@ -4,7 +4,12 @@ from pathlib import Path
 
 from metadata_etl.config import ColumnConfig, ETLConfig
 from metadata_etl.transformations.registry import default_registry
-from metadata_etl.transformations.sql import cast_expression, quote_identifier, sql_literal
+from metadata_etl.transformations.sql import (
+    DUCKDB_TYPES,
+    cast_expression,
+    quote_identifier,
+    sql_literal,
+)
 
 
 def csv_relation(path: Path, delimiter: str) -> str:
@@ -29,13 +34,38 @@ def _normalized_source_expression(column: ColumnConfig, config: ETLConfig) -> st
     return f"{expression} AS {quote_identifier(column.name)}"
 
 
-def compile_transform_sql(config: ETLConfig, *, source_path: Path | None = None) -> str:
-    """Compile the approved canonical schema and transforms into one DuckDB query."""
+def compile_canonical_sql(
+    config: ETLConfig,
+    *,
+    source_path: Path | None = None,
+    watermark_value: object | None = None,
+) -> str:
+    """Compile source normalization and the optional incremental boundary."""
     relation = csv_relation(source_path or config.source_path, config.delimiter)
     projections = ",\n        ".join(
         _normalized_source_expression(column, config) for column in config.columns
     )
-    ctes = [f"canonical AS (\n    SELECT\n        {projections}\n    FROM {relation}\n)"]
+    query = f"SELECT\n        {projections}\n    FROM {relation}"
+    if config.watermark is not None and watermark_value is not None:
+        column = quote_identifier(config.watermark.column)
+        threshold = (
+            f"CAST({sql_literal(watermark_value)} AS {DUCKDB_TYPES[config.watermark.datatype]})"
+        )
+        query = f"SELECT * FROM (\n    {query}\n) WHERE {column} > {threshold}"
+    return query
+
+
+def compile_transform_sql(
+    config: ETLConfig,
+    *,
+    source_path: Path | None = None,
+    watermark_value: object | None = None,
+) -> str:
+    """Compile the approved canonical schema and transforms into one DuckDB query."""
+    canonical = compile_canonical_sql(
+        config, source_path=source_path, watermark_value=watermark_value
+    )
+    ctes = [f"canonical AS (\n    {canonical}\n)"]
     previous = "canonical"
     registry = default_registry()
 

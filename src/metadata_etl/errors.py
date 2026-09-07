@@ -16,3 +16,7 @@ class ProfilingError(ETLError):
 
 class LoadError(ETLError):
     """Raised when a destination load cannot be completed."""
+
+
+class SchemaDriftError(ETLError):
+    """Raised when detected schema drift violates the approved policy."""

@@ -5,11 +5,11 @@
 
 **New dataset = new config, not new pipeline.**
 
-This repository contains the complete Milestone 1 vertical slice, Milestone 2 transformation
-engine, Milestone 3 onboarding profiler, and Milestone 4 data-quality contracts and quarantine. A
-new CSV is profiled into a starter YAML proposal, then an approved configuration drives raw
-preservation, normalization, SQL transformations, quality evaluation, privacy-safe quarantine,
-PostgreSQL staging, atomic trusted-table publishing, and operational metadata. There is no
+This repository contains Milestones 1–5: the vertical ETL slice, generic transformation engine,
+onboarding profiler, data-quality/quarantine layer, and reliability controls. A new CSV is profiled
+into a starter YAML proposal, then an approved configuration drives raw preservation, schema
+fingerprinting, drift policy, normalization, SQL transformations, quality evaluation,
+privacy-safe quarantine, full/incremental/upsert publishing, and operational metadata. There is no
 dataset-specific Python.
 
 ## Runtime flow
@@ -19,14 +19,18 @@ customers.csv
   -> validate approved customers.yaml
   -> create run ID and RUNNING ledger entry
   -> preserve byte-identical raw copy
+  -> fingerprint raw schema and apply drift policy
   -> normalize configured columns and types
+  -> fingerprint and validate canonical schema
   -> validate operators through the transformation registry
   -> compile cast/filter/derive/map/deduplicate operators into DuckDB SQL
+  -> apply the previous successful watermark for incremental runs
   -> evaluate not-null/unique/range/regex contracts
   -> write failed rows as privacy-protected quarantine details
   -> send only contract-passing rows forward
   -> load a run-scoped PostgreSQL staging table
-  -> atomically replace the trusted table
+  -> atomically full-publish, append, or merge into the trusted table
+  -> advance the watermark only after successful publish
   -> record SUCCEEDED/FAILED metrics in the ledger
 ```
 
@@ -50,12 +54,18 @@ repository, the current commit SHA is recorded; otherwise the ledger uses `UNAVA
 - row-level quarantine with `full`, `masked`, `hashed`, and `none` value policies
 - per-rule results in `etl_meta.data_quality_results`
 - unique quarantined-row counts in the run ledger
-- PostgreSQL full loads through transaction-scoped staging
+- deterministic raw and canonical schema fingerprints
+- configurable `allow`, `warn`, and `fail` schema-drift actions
+- drift history in `etl_meta.schema_drift_history`
+- PostgreSQL full, incremental, and business-key upsert loads through transaction-scoped staging
+- centrally persisted successful watermarks in `etl_meta.etl_watermarks`
+- insert/update counts and before/after watermarks in the run ledger
+- idempotent full reruns, successful incremental reruns, and business-key upserts
 - immutable-by-convention raw run directories and SHA-256 checksums
 - run status, counts, timing, config identity, and errors in `etl_meta.etl_run_ledger`
 
-Not implemented yet: schema drift, incremental/upsert/SCD2, JSON/Parquet/PostgreSQL sources,
-Airflow, Power BI, or cloud services. Those belong to later milestones.
+Not implemented yet: SCD Type 2, JSON/Parquet/PostgreSQL sources, backfill orchestration, Airflow,
+Power BI, or cloud services. Those belong to later milestones.
 
 ## Dataset onboarding flow
 
@@ -189,7 +199,8 @@ The runnable example is [`configs/customers.yaml`](configs/customers.yaml). Impo
 - PostgreSQL credentials are named by `load.connection_env`; secrets are not stored in YAML.
 - SQL expressions reject statement separators, comments, and data-changing/DDL keywords. DuckDB
   binds the complete plan during `etl validate`, catching missing columns and invalid expressions.
-- The current source/load scope remains `source.type: csv` and `load.strategy: full`.
+- The current source scope remains `source.type: csv`; load strategies are `full`, `incremental`,
+  and `upsert`.
 - Starter YAML is a proposal, not executable approval. Required review blocks must include
   `approved: true` and a non-empty `approved_by` before runtime.
 
@@ -317,12 +328,86 @@ The runnable failure example is [`configs/students_quality.yaml`](configs/studen
 extracts and transforms five rows, passes one distinct row, quarantines four distinct rows, and
 loads only the passing row. Some rows fail multiple rules, producing six quarantine details.
 
+## Schema fingerprints and drift
+
+Every run fingerprints two deliberately different structures:
+
+- Raw schema: **“Did the physical source change?”** It includes CSV source names, order, and
+  observed physical value representations before normalization.
+- Canonical schema: **“Does the normalized structure still match what the pipeline expects?”** It
+  includes approved canonical names, datatypes, nullability, order, and relevant formats, without
+  coupling the canonical hash to raw source names.
+
+Hashes are SHA-256 over deterministic JSON and never include timestamps or run IDs. The current
+schemas are compared with the latest successful run for the dataset. This means a failed run never
+becomes the next baseline. Each detected event is persisted with its policy and action in
+`etl_meta.schema_drift_history` before any trusted-table mutation.
+
+```yaml
+schema_drift:
+  added_columns: warn
+  removed_columns: fail
+  datatype_change: fail
+  canonical_change: fail
+```
+
+`allow` records the event and continues, `warn` records a warning state and continues, and `fail`
+records the event then stops before staging/publishing. The two schema-drift demo configs use the
+same dataset name: run [`configs/schema_drift_base.yaml`](configs/schema_drift_base.yaml), then
+[`configs/schema_drift_added.yaml`](configs/schema_drift_added.yaml). The added raw `Email` column
+warns while the approved canonical structure remains unchanged.
+
+## Incremental loads and watermarks
+
+An incremental config names a canonical source column and its approved datatype:
+
+```yaml
+load:
+  strategy: incremental
+  watermark:
+    column: updated_at
+    type: timestamp
+```
+
+The first run processes all eligible rows when no stored watermark exists. An optional
+`initial_value` can provide an explicit lower bound. Later runs normalize and process only rows
+strictly newer than the previous successful value. `rows_extracted` therefore describes the range
+actually processed, not the complete historical CSV.
+
+**Watermark advances only after successful publish.** The trusted append and watermark update are
+ordered inside one PostgreSQL transaction. If transformation, quality persistence, staging,
+publishing, or the watermark update fails, the transaction does not leave a partial append and the
+old watermark remains available for a safe retry. A no-new-data run publishes zero rows and keeps
+the watermark unchanged. See
+[`configs/reliability_incremental.yaml`](configs/reliability_incremental.yaml).
+
+## Upsert and idempotency
+
+Upsert requires one or more post-transformation business-key columns:
+
+```yaml
+load:
+  strategy: upsert
+  keys: [entity_id]
+```
+
+Missing, empty, duplicate, or unknown key definitions fail during config validation. At runtime,
+null or duplicate keys in the valid input are rejected before target changes. PostgreSQL stages the
+valid rows and performs a locked transactional `MERGE`: existing keys receive current values and
+new keys are inserted. Quarantined rows never enter this operation. See
+[`configs/reliability_upsert.yaml`](configs/reliability_upsert.yaml).
+
+Idempotency is strategy-specific: full loads atomically replace the trusted snapshot; incremental
+loads use the successful watermark and transaction boundary; upserts merge by approved business
+keys. Run IDs remain audit identifiers and are not the mechanism preventing duplicate trusted rows.
+
 ## Atomicity and reruns
 
-Every run gets a unique staging table. Staging creation, row copy, trusted-table truncate/insert, and
-staging cleanup happen in one PostgreSQL transaction. A failure rolls the transaction back and
-leaves the existing trusted table unchanged. A successful full rerun replaces the trusted contents,
-so it does not append duplicates.
+Every run gets a unique staging table. Staging creation, row copy, trusted-table mutation, staging
+cleanup, and—in incremental mode—watermark advancement happen transactionally. A failure rolls the
+transaction back and leaves the existing trusted table and successful watermark unchanged. Schema
+drift failure occurs before any target mutation, and only rows that pass quality contracts are
+given to any load strategy.
 
 ## Tests
 
@@ -335,8 +420,10 @@ The tests cover configuration approval and safety, leading-zero preservation, by
 copying, validation failures for every operator, execution of all five operators against unrelated
 dataset shapes, profiler inference and statistics, exact duplicate counting, starter YAML output,
 runtime blocking before review, contract validation/evaluation, privacy handling, quarantine
-persistence, rule summaries, trusted-row exclusion, and row-count accounting. A live PostgreSQL
-instance is needed for the end-to-end CLI run, but not for these unit tests.
+persistence, schema hash determinism, drift detection/policies/history, incremental first/later/no-
+data runs, failure-safe watermarks and retries, business-key upserts, full rerun idempotency, trusted-
+row exclusion, and row-count accounting. A live PostgreSQL instance is needed for the end-to-end
+CLI verification, but not for these unit tests.
 
 ## Repository map
 
@@ -344,18 +431,24 @@ instance is needed for the end-to-end CLI run, but not for these unit tests.
 configs/customers.yaml              approved dataset metadata
 configs/sensors.yaml                unrelated dataset using all Milestone 2 operators
 configs/students_quality.yaml       contracts, privacy policies, and quality failures
+configs/reliability_incremental.yaml incremental/watermark demo
+configs/reliability_upsert.yaml     business-key merge demo
+configs/schema_drift_*.yaml         raw added-column drift demo
 data/incoming/customers.csv         example input
 data/incoming/sensor_readings.csv   second example input
 data/incoming/students.csv          profiling/onboarding example
 data/incoming/student_quality.csv   quality/quarantine example
+data/incoming/reliability_*.csv     incremental and upsert examples
+data/incoming/schema_drift_*.csv    two-run schema drift example
 data/raw/                            run-scoped untouched copies (Git-ignored)
 src/metadata_etl/onboarding/        profiler and starter YAML generator
 src/metadata_etl/quality/           contract registry, evaluation, and privacy handling
+src/metadata_etl/schema/            deterministic fingerprints and drift comparison
 src/metadata_etl/config.py          parsing and validation
 src/metadata_etl/sql_compiler.py    generic SQL compilation
 src/metadata_etl/transformations/   registry and reusable operators
 src/metadata_etl/source.py          raw preservation
-src/metadata_etl/postgres.py        ledger, quality metadata, quarantine, and atomic publish
+src/metadata_etl/postgres.py        ledger, drift/watermarks, and atomic load strategies
 src/metadata_etl/pipeline.py        dataset-agnostic execution sequence
 src/metadata_etl/cli.py             etl validate / etl run
 sql/metadata_tables.sql             ledger DDL reference

@@ -4,6 +4,7 @@ from typing import Any, ClassVar, Self
 import pytest
 
 from metadata_etl import pipeline
+from metadata_etl.postgres import LoadMetrics
 
 ROOT = Path(__file__).parents[1]
 CONFIG = ROOT / "configs" / "customers.yaml"
@@ -34,12 +35,18 @@ class FakePostgresStore:
         assert values["summaries"] == []
         assert values["quarantine_records"] == []
 
-    def publish_full(self, **values: Any) -> int:
+    def get_previous_successful_schemas(self, dataset: str) -> tuple[None, None]:
+        return None, None
+
+    def record_schema_drift(self, **values: Any) -> None:
+        assert values["events"] == ()
+
+    def publish_full(self, **values: Any) -> LoadMetrics:
         rows = values["rows"]
         columns = [item[0] for item in values["columns"]]
         assert len(rows) == 3
         assert rows[0][columns.index("customer_id")] == "00123"
-        return len(rows)
+        return LoadMetrics(len(rows), len(rows), 0)
 
 
 def test_pipeline_orchestrates_the_vertical_slice(
@@ -63,5 +70,10 @@ def test_pipeline_orchestrates_the_vertical_slice(
     assert result.rows_contract_passed == 3
     assert result.rows_quarantined == 0
     assert result.rows_loaded == 3
+    assert result.rows_inserted == 3
+    assert result.rows_updated == 0
+    assert len(result.raw_schema_hash) == 64
+    assert len(result.canonical_schema_hash) == 64
+    assert result.drift_status == "NONE"
     assert Path(result.raw_path).read_bytes() == (ROOT / "data/incoming/customers.csv").read_bytes()
     assert FakePostgresStore.statuses == ["SUCCEEDED"]

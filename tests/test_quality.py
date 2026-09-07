@@ -11,7 +11,7 @@ import yaml
 from metadata_etl import pipeline
 from metadata_etl.config import load_config
 from metadata_etl.errors import ConfigError
-from metadata_etl.postgres import PostgresStore
+from metadata_etl.postgres import LoadMetrics, PostgresStore
 from metadata_etl.quality.engine import QualitySummary, QuarantineRecord
 from metadata_etl.quality.privacy import protect_value
 
@@ -48,10 +48,17 @@ class CapturingPostgresStore:
         type(self).summaries = list(values["summaries"])
         type(self).quarantine_records = list(values["quarantine_records"])
 
-    def publish_full(self, **values: Any) -> int:
+    def get_previous_successful_schemas(self, dataset: str) -> tuple[None, None]:
+        return None, None
+
+    def record_schema_drift(self, **values: Any) -> None:
+        assert values["events"] == ()
+
+    def publish_full(self, **values: Any) -> LoadMetrics:
         type(self).published_rows = list(values["rows"])
         type(self).published_columns = [column[0] for column in values["columns"]]
-        return len(type(self).published_rows)
+        count = len(type(self).published_rows)
+        return LoadMetrics(count, count, 0)
 
     @classmethod
     def reset(cls) -> None:

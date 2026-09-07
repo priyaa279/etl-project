@@ -93,6 +93,12 @@ def generate_starter_config(profile: DatasetProfile) -> dict[str, Any]:
         "columns": columns,
         "transformations": [],
         "contracts": [],
+        "schema_drift": {
+            "added_columns": "warn",
+            "removed_columns": "fail",
+            "datatype_change": "fail",
+            "canonical_change": "fail",
+        },
         "load": {
             "strategy": "full",
             "connection_env": "ETL_POSTGRES_DSN",

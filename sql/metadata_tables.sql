@@ -16,6 +16,15 @@ CREATE TABLE IF NOT EXISTS etl_meta.etl_run_ledger (
     rows_contract_passed BIGINT,
     rows_quarantined BIGINT,
     rows_loaded BIGINT,
+    rows_inserted BIGINT,
+    rows_updated BIGINT,
+    raw_schema_hash TEXT,
+    canonical_schema_hash TEXT,
+    raw_schema_json TEXT,
+    canonical_schema_json TEXT,
+    drift_status TEXT,
+    watermark_before TEXT,
+    watermark_after TEXT,
     duration_seconds DOUBLE PRECISION,
     error_message TEXT
 );
@@ -25,6 +34,16 @@ ALTER TABLE etl_meta.etl_run_ledger
 
 ALTER TABLE etl_meta.etl_run_ledger
     ADD COLUMN IF NOT EXISTS rows_quarantined BIGINT;
+
+ALTER TABLE etl_meta.etl_run_ledger ADD COLUMN IF NOT EXISTS rows_inserted BIGINT;
+ALTER TABLE etl_meta.etl_run_ledger ADD COLUMN IF NOT EXISTS rows_updated BIGINT;
+ALTER TABLE etl_meta.etl_run_ledger ADD COLUMN IF NOT EXISTS raw_schema_hash TEXT;
+ALTER TABLE etl_meta.etl_run_ledger ADD COLUMN IF NOT EXISTS canonical_schema_hash TEXT;
+ALTER TABLE etl_meta.etl_run_ledger ADD COLUMN IF NOT EXISTS raw_schema_json TEXT;
+ALTER TABLE etl_meta.etl_run_ledger ADD COLUMN IF NOT EXISTS canonical_schema_json TEXT;
+ALTER TABLE etl_meta.etl_run_ledger ADD COLUMN IF NOT EXISTS drift_status TEXT;
+ALTER TABLE etl_meta.etl_run_ledger ADD COLUMN IF NOT EXISTS watermark_before TEXT;
+ALTER TABLE etl_meta.etl_run_ledger ADD COLUMN IF NOT EXISTS watermark_after TEXT;
 
 CREATE TABLE IF NOT EXISTS etl_meta.data_quality_results (
     run_id TEXT NOT NULL,
@@ -49,4 +68,26 @@ CREATE TABLE IF NOT EXISTS etl_meta.etl_quarantine (
     failed_column TEXT,
     failed_value TEXT,
     quarantined_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS etl_meta.schema_drift_history (
+    drift_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    dataset TEXT NOT NULL,
+    schema_level TEXT NOT NULL,
+    old_schema_hash TEXT NOT NULL,
+    new_schema_hash TEXT NOT NULL,
+    drift_type TEXT NOT NULL,
+    change_description TEXT NOT NULL,
+    policy TEXT NOT NULL,
+    action_taken TEXT NOT NULL,
+    detected_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS etl_meta.etl_watermarks (
+    dataset TEXT PRIMARY KEY,
+    watermark_column TEXT NOT NULL,
+    last_successful_value TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    run_id TEXT NOT NULL
 );

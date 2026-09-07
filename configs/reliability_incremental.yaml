@@ -1,0 +1,58 @@
+config_schema_version: "1.0"
+
+dataset:
+  name: reliability_events
+
+review:
+  required: true
+  approved: true
+  approved_by: priyaa
+
+source:
+  type: csv
+  path: data/incoming/reliability_events.csv
+  options:
+    delimiter: ","
+
+runtime:
+  raw_root: data/raw
+
+normalization:
+  trim_strings: true
+  null_tokens: ["", "NULL"]
+
+columns:
+  event_id:
+    source: Event ID
+    type: string
+    nullable: false
+  event_name:
+    source: Event Name
+    type: string
+    nullable: false
+  updated_at:
+    source: Updated At
+    type: timestamp
+    nullable: false
+
+transformations: []
+contracts:
+  - id: DQ001
+    type: not_null
+    column: event_id
+
+schema_drift:
+  added_columns: warn
+  removed_columns: fail
+  datatype_change: fail
+  canonical_change: fail
+
+load:
+  strategy: incremental
+  watermark:
+    column: updated_at
+    type: timestamp
+  connection_env: ETL_POSTGRES_DSN
+  schema: public
+  staging_table: reliability_events_staging
+  target_table: reliability_events

@@ -1,0 +1,41 @@
+config_schema_version: "1.0"
+dataset:
+  name: schema_drift_records
+review:
+  required: true
+  approved: true
+  approved_by: priyaa
+source:
+  type: csv
+  path: data/incoming/schema_drift_run2.csv
+runtime:
+  raw_root: data/raw
+normalization:
+  trim_strings: true
+  null_tokens: [""]
+columns:
+  record_id:
+    source: Record ID
+    type: string
+    nullable: false
+  name:
+    source: Name
+    type: string
+    nullable: false
+  updated_at:
+    source: Updated At
+    type: timestamp
+    nullable: false
+transformations: []
+contracts: []
+schema_drift:
+  added_columns: warn
+  removed_columns: fail
+  datatype_change: fail
+  canonical_change: fail
+load:
+  strategy: full
+  connection_env: ETL_POSTGRES_DSN
+  schema: public
+  staging_table: schema_drift_records_staging
+  target_table: schema_drift_records
