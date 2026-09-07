@@ -13,6 +13,7 @@ from typing import Any
 import duckdb
 
 from metadata_etl.config import ETLConfig, load_config
+from metadata_etl.connectors import ExtractedSource, default_connector_registry
 from metadata_etl.errors import ETLError, ExtractionError, SchemaDriftError
 from metadata_etl.postgres import LoadMetrics, PostgresStore
 from metadata_etl.quality.engine import evaluate_contracts
@@ -20,9 +21,7 @@ from metadata_etl.schema import (
     SchemaFingerprint,
     canonical_schema_fingerprint,
     detect_schema_drift,
-    raw_csv_schema_fingerprint,
 )
-from metadata_etl.source import RawArtifact, preserve_raw_copy
 from metadata_etl.sql_compiler import compile_canonical_sql, compile_transform_sql
 from metadata_etl.transformations.sql import quote_identifier
 
@@ -43,11 +42,17 @@ class RunResult:
     rows_loaded: int
     rows_inserted: int
     rows_updated: int
+    rows_expired: int
+    rows_history_inserted: int
     raw_schema_hash: str
     canonical_schema_hash: str
     drift_status: str
     watermark_before: str | None
     watermark_after: str | None
+    source_type: str
+    run_mode: str
+    backfill_from: str | None
+    backfill_to: str | None
     duration_seconds: float
 
     def to_dict(self) -> dict[str, Any]:
@@ -77,12 +82,23 @@ def _git_sha(config_path: Path) -> str:
 
 
 def _extract_and_transform(
-    config: ETLConfig, raw: RawArtifact, watermark_value: object | None = None
+    config: ETLConfig,
+    extracted: ExtractedSource,
+    watermark_value: object | None = None,
+    watermark_to: object | None = None,
 ) -> tuple[int, list[tuple[str, Any]], list[tuple[Any, ...]], str | None]:
     canonical_query = compile_canonical_sql(
-        config, source_path=raw.path, watermark_value=watermark_value
+        config,
+        source_relation=extracted.relation_sql,
+        watermark_value=watermark_value,
+        watermark_to=watermark_to,
     )
-    query = compile_transform_sql(config, source_path=raw.path, watermark_value=watermark_value)
+    query = compile_transform_sql(
+        config,
+        source_relation=extracted.relation_sql,
+        watermark_value=watermark_value,
+        watermark_to=watermark_to,
+    )
     try:
         with duckdb.connect(":memory:") as connection:
             if config.watermark is not None:
@@ -98,10 +114,10 @@ def _extract_and_transform(
             description = cursor.description
             rows = cursor.fetchall()
     except duckdb.Error as exc:
-        raise ExtractionError(f"CSV normalization or transformation failed: {exc}") from exc
+        raise ExtractionError(f"Source normalization or transformation failed: {exc}") from exc
 
     if extracted_row is None or description is None:
-        raise ExtractionError("CSV query did not return a result")
+        raise ExtractionError("Source query did not return a result")
     output_columns = [(item[0], item[1]) for item in description]
     positions = {name: index for index, (name, _) in enumerate(output_columns)}
     contract_not_null_columns = {
@@ -135,6 +151,9 @@ def _load(
     rows: list[tuple[Any, ...]],
     run_id: str,
     candidate_watermark: str | None,
+    run_mode: str,
+    backfill_from: str | None,
+    backfill_to: str | None,
 ) -> LoadMetrics:
     common = {
         "destination_schema": config.destination_schema,
@@ -148,6 +167,14 @@ def _load(
         return store.publish_full(**common)
     if config.load_strategy == "incremental":
         assert config.watermark is not None
+        if run_mode == "backfill":
+            assert backfill_from is not None and backfill_to is not None
+            return store.publish_backfill(
+                **common,
+                watermark_column=config.watermark.column,
+                backfill_from=backfill_from,
+                backfill_to=backfill_to,
+            )
         return store.publish_incremental(
             **common,
             dataset=config.dataset,
@@ -155,17 +182,52 @@ def _load(
             watermark_after=candidate_watermark,
             updated_at=datetime.now(UTC),
         )
-    return store.publish_upsert(**common, keys=config.load_keys)
+    if config.load_strategy == "upsert":
+        return store.publish_upsert(**common, keys=config.load_keys)
+    assert config.scd2 is not None
+    return store.publish_scd2(**common, scd2=config.scd2)
 
 
-def run_pipeline(config_path: str | Path) -> RunResult:
-    """Execute an approved CSV configuration through the generic ETL runtime."""
+def _backfill_boundary(value: str, datatype: str) -> Any:
+    try:
+        if datatype == "timestamp":
+            return datetime.fromisoformat(value)
+        if datatype == "date":
+            return date.fromisoformat(value)
+        if datatype == "integer":
+            return int(value)
+        if datatype == "decimal":
+            return Decimal(value)
+        return value
+    except (ValueError, ArithmeticError) as exc:
+        raise ETLError(f"Backfill boundary {value!r} is not a valid {datatype}") from exc
+
+
+def run_pipeline(
+    config_path: str | Path,
+    *,
+    backfill_from: str | None = None,
+    backfill_to: str | None = None,
+) -> RunResult:
+    """Execute an approved source configuration through the generic ETL runtime."""
     config = load_config(config_path)
+    if (backfill_from is None) != (backfill_to is None):
+        raise ETLError("Backfill requires both --from and --to")
+    run_mode = "backfill" if backfill_from is not None else "normal"
+    lower_boundary: Any | None = None
+    upper_boundary: Any | None = None
+    if run_mode == "backfill":
+        if config.load_strategy != "incremental" or config.watermark is None:
+            raise ETLError("Backfill is supported only for incremental loads with a watermark")
+        lower_boundary = _backfill_boundary(backfill_from, config.watermark.datatype)
+        upper_boundary = _backfill_boundary(backfill_to, config.watermark.datatype)
+        if lower_boundary >= upper_boundary:
+            raise ETLError("Backfill --from must be earlier than --to")
     run_id = _create_run_id()
     git_sha = _git_sha(config.path)
     started_at = datetime.now(UTC)
     timer = time.perf_counter()
-    raw: RawArtifact | None = None
+    extracted: ExtractedSource | None = None
     rows_extracted: int | None = None
     rows_transformed: int | None = None
     rows_contract_passed: int | None = None
@@ -175,6 +237,8 @@ def run_pipeline(config_path: str | Path) -> RunResult:
     drift_status: str | None = None
     watermark_before: str | None = None
     watermark_after: str | None = None
+    rows_expired = 0
+    rows_history_inserted = 0
 
     with PostgresStore(config.dsn) as store:
         store.ensure_metadata_tables()
@@ -185,10 +249,18 @@ def run_pipeline(config_path: str | Path) -> RunResult:
             config_hash=config.config_hash,
             git_sha=git_sha,
             started_at=started_at,
+            source_type=config.source_type,
+            run_mode=run_mode,
+            backfill_from=backfill_from,
+            backfill_to=backfill_to,
         )
         try:
-            raw = preserve_raw_copy(config.source_path, config.raw_root, config.dataset, run_id)
-            raw_schema = raw_csv_schema_fingerprint(raw.path, config.delimiter)
+            extracted = (
+                default_connector_registry()
+                .get(config.source_type)
+                .extract(config, run_id, config.raw_root)
+            )
+            raw_schema = extracted.raw_schema
             canonical_schema = canonical_schema_fingerprint(config.columns)
             previous_raw_json, previous_canonical_json = store.get_previous_successful_schemas(
                 config.dataset
@@ -229,8 +301,8 @@ def run_pipeline(config_path: str | Path) -> RunResult:
                     f"Schema drift violates configured policy: {', '.join(failed_types)}"
                 )
 
-            extraction_watermark: object | None = None
-            if config.watermark is not None:
+            extraction_watermark: object | None = lower_boundary
+            if config.watermark is not None and run_mode == "normal":
                 watermark_before = store.get_watermark(config.dataset, config.watermark.column)
                 extraction_watermark = (
                     watermark_before
@@ -238,7 +310,7 @@ def run_pipeline(config_path: str | Path) -> RunResult:
                     else config.watermark.initial_value
                 )
             rows_extracted, output_columns, rows, candidate_watermark = _extract_and_transform(
-                config, raw, extraction_watermark
+                config, extracted, extraction_watermark, upper_boundary
             )
             rows_transformed = len(rows)
             quality = evaluate_contracts(
@@ -262,11 +334,16 @@ def run_pipeline(config_path: str | Path) -> RunResult:
                 quality.valid_rows,
                 run_id,
                 candidate_watermark,
+                run_mode,
+                backfill_from,
+                backfill_to,
             )
             rows_loaded = load_metrics.rows_loaded
             rows_inserted = load_metrics.rows_inserted
             rows_updated = load_metrics.rows_updated
-            if config.watermark is not None:
+            rows_expired = load_metrics.rows_expired
+            rows_history_inserted = load_metrics.rows_history_inserted
+            if config.watermark is not None and run_mode == "normal":
                 watermark_after = candidate_watermark or watermark_before
         except Exception as exc:
             store.finish_run(
@@ -274,8 +351,8 @@ def run_pipeline(config_path: str | Path) -> RunResult:
                 status="FAILED",
                 finished_at=datetime.now(UTC),
                 duration_seconds=time.perf_counter() - timer,
-                raw_path=str(raw.path) if raw else None,
-                raw_sha256=raw.sha256 if raw else None,
+                raw_path=str(extracted.artifact.path) if extracted else None,
+                raw_sha256=extracted.artifact.sha256 if extracted else None,
                 rows_extracted=rows_extracted,
                 rows_transformed=rows_transformed,
                 rows_contract_passed=rows_contract_passed,
@@ -287,6 +364,8 @@ def run_pipeline(config_path: str | Path) -> RunResult:
                 drift_status=drift_status,
                 watermark_before=watermark_before,
                 watermark_after=watermark_before,
+                rows_expired=rows_expired,
+                rows_history_inserted=rows_history_inserted,
                 error_message=str(exc)[:4000],
             )
             if isinstance(exc, ETLError):
@@ -299,8 +378,8 @@ def run_pipeline(config_path: str | Path) -> RunResult:
             status="SUCCEEDED",
             finished_at=datetime.now(UTC),
             duration_seconds=duration,
-            raw_path=str(raw.path),
-            raw_sha256=raw.sha256,
+            raw_path=str(extracted.artifact.path),
+            raw_sha256=extracted.artifact.sha256,
             rows_extracted=rows_extracted,
             rows_transformed=rows_transformed,
             rows_contract_passed=rows_contract_passed,
@@ -308,6 +387,8 @@ def run_pipeline(config_path: str | Path) -> RunResult:
             rows_loaded=rows_loaded,
             rows_inserted=rows_inserted,
             rows_updated=rows_updated,
+            rows_expired=rows_expired,
+            rows_history_inserted=rows_history_inserted,
             raw_schema_hash=raw_schema.hash,
             canonical_schema_hash=canonical_schema.hash,
             raw_schema_json=raw_schema.json,
@@ -323,8 +404,8 @@ def run_pipeline(config_path: str | Path) -> RunResult:
         status="SUCCEEDED",
         config_hash=config.config_hash,
         git_commit_sha=git_sha,
-        raw_path=str(raw.path),
-        raw_sha256=raw.sha256,
+        raw_path=str(extracted.artifact.path),
+        raw_sha256=extracted.artifact.sha256,
         rows_extracted=rows_extracted,
         rows_transformed=rows_transformed,
         rows_contract_passed=rows_contract_passed,
@@ -332,10 +413,16 @@ def run_pipeline(config_path: str | Path) -> RunResult:
         rows_loaded=rows_loaded,
         rows_inserted=rows_inserted,
         rows_updated=rows_updated,
+        rows_expired=rows_expired,
+        rows_history_inserted=rows_history_inserted,
         raw_schema_hash=raw_schema.hash,
         canonical_schema_hash=canonical_schema.hash,
         drift_status=drift_status,
         watermark_before=watermark_before,
         watermark_after=watermark_after,
+        source_type=config.source_type,
+        run_mode=run_mode,
+        backfill_from=backfill_from,
+        backfill_to=backfill_to,
         duration_seconds=duration,
     )

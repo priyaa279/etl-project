@@ -5,11 +5,11 @@
 
 **New dataset = new config, not new pipeline.**
 
-This repository contains Milestones 1–5: the vertical ETL slice, generic transformation engine,
-onboarding profiler, data-quality/quarantine layer, and reliability controls. A new CSV is profiled
-into a starter YAML proposal, then an approved configuration drives raw preservation, schema
-fingerprinting, drift policy, normalization, SQL transformations, quality evaluation,
-privacy-safe quarantine, full/incremental/upsert publishing, and operational metadata. There is no
+This repository contains Milestones 1–6: the vertical ETL slice, generic transformation engine,
+onboarding profiler, data-quality/quarantine layer, reliability controls, advanced SCD2 loading,
+and generic CSV/JSON/Parquet/PostgreSQL connectors. Approved configuration drives raw preservation,
+schema fingerprinting, explicit normalization, SQL transformations, quality evaluation,
+privacy-safe quarantine, transactional publishing, and operational metadata. There is no
 dataset-specific Python.
 
 ## Runtime flow
@@ -18,9 +18,10 @@ dataset-specific Python.
 customers.csv
   -> validate approved customers.yaml
   -> create run ID and RUNNING ledger entry
-  -> preserve byte-identical raw copy
+  -> select CSV/JSON/Parquet/PostgreSQL connector
+  -> preserve the extracted source representation
   -> fingerprint raw schema and apply drift policy
-  -> normalize configured columns and types
+  -> explicitly normalize source structure and configured types
   -> fingerprint and validate canonical schema
   -> validate operators through the transformation registry
   -> compile cast/filter/derive/map/deduplicate operators into DuckDB SQL
@@ -29,7 +30,7 @@ customers.csv
   -> write failed rows as privacy-protected quarantine details
   -> send only contract-passing rows forward
   -> load a run-scoped PostgreSQL staging table
-  -> atomically full-publish, append, or merge into the trusted table
+  -> atomically full-publish, append, merge, backfill, or maintain SCD2 history
   -> advance the watermark only after successful publish
   -> record SUCCEEDED/FAILED metrics in the ledger
 ```
@@ -41,6 +42,10 @@ repository, the current commit SHA is recorded; otherwise the ledger uses `UNAVA
 ## Implemented capabilities
 
 - CSV sources with configurable delimiters
+- JSON arrays/objects and newline-delimited JSON with explicit nested normalization and explosion
+- Parquet sources with embedded-schema fingerprinting
+- table-based PostgreSQL sources with environment-only credentials and CSV raw snapshots
+- one connector registry and shared downstream pipeline for every source type
 - explicit source-to-canonical column mapping
 - string, integer, decimal, date, timestamp, and boolean types
 - configured trimming and null tokens
@@ -58,14 +63,16 @@ repository, the current commit SHA is recorded; otherwise the ledger uses `UNAVA
 - configurable `allow`, `warn`, and `fail` schema-drift actions
 - drift history in `etl_meta.schema_drift_history`
 - PostgreSQL full, incremental, and business-key upsert loads through transaction-scoped staging
+- config-driven SCD Type 2 history with atomic expiry/current-version insertion
+- bounded, idempotent backfills that do not advance the production watermark
 - centrally persisted successful watermarks in `etl_meta.etl_watermarks`
 - insert/update counts and before/after watermarks in the run ledger
 - idempotent full reruns, successful incremental reruns, and business-key upserts
 - immutable-by-convention raw run directories and SHA-256 checksums
 - run status, counts, timing, config identity, and errors in `etl_meta.etl_run_ledger`
 
-Not implemented yet: SCD Type 2, JSON/Parquet/PostgreSQL sources, backfill orchestration, Airflow,
-Power BI, or cloud services. Those belong to later milestones.
+Not implemented yet: Airflow, Power BI, cloud services, Kafka/streaming, Spark, dbt, automatic
+schema migration, or automatic business-rule inference. Those belong to later milestones.
 
 ## Dataset onboarding flow
 
@@ -199,8 +206,8 @@ The runnable example is [`configs/customers.yaml`](configs/customers.yaml). Impo
 - PostgreSQL credentials are named by `load.connection_env`; secrets are not stored in YAML.
 - SQL expressions reject statement separators, comments, and data-changing/DDL keywords. DuckDB
   binds the complete plan during `etl validate`, catching missing columns and invalid expressions.
-- The current source scope remains `source.type: csv`; load strategies are `full`, `incremental`,
-  and `upsert`.
+- Supported source types are `csv`, `json`, `parquet`, and table-based `postgres`; load strategies
+  are `full`, `incremental`, `upsert`, and `scd2`.
 - Starter YAML is a proposal, not executable approval. Required review blocks must include
   `approved: true` and a non-empty `approved_by` before runtime.
 
@@ -401,6 +408,98 @@ Idempotency is strategy-specific: full loads atomically replace the trusted snap
 loads use the successful watermark and transaction boundary; upserts merge by approved business
 keys. Run IDs remain audit identifiers and are not the mechanism preventing duplicate trusted rows.
 
+## Connector architecture and raw preservation
+
+`CSVConnector`, `JSONConnector`, `ParquetConnector`, and `PostgresConnector` implement one source
+interface and are selected by `source.type`. Every connector returns a preserved raw artifact, a
+physical schema fingerprint, and a DuckDB-readable relation. Normalization, transformations,
+contracts, drift handling, and loading are shared after that boundary.
+
+**The raw layer preserves the extracted source representation. The canonical layer represents the
+approved relational structure used by the engine.** CSV, JSON, and Parquet inputs are copied
+byte-for-byte. A PostgreSQL table source is materialized as a deterministic CSV snapshot containing
+the exact rows returned for the run; credentials remain in `SOURCE_POSTGRES_DSN` or another named
+environment variable.
+
+Only table-based PostgreSQL extraction is supported in this milestone. Arbitrary source queries are
+rejected to keep ingestion read-only and conservative.
+
+## JSON normalization
+
+Nested JSON is never flattened by guesswork:
+
+```text
+raw nested payload
+  -> raw fingerprint
+  -> configured normalization
+  -> canonical relational schema
+  -> canonical validation
+```
+
+```yaml
+source:
+  type: json
+  path: data/incoming/nested_orders.json
+
+normalization:
+  json:
+    root_path: orders
+    fields:
+      order_id: order.id
+      customer_id: customer.id
+      order_date: order.date
+    explode:
+      path: items
+      as: item
+      fields:
+        product_id: item.product_id
+        quantity: item.quantity
+```
+
+Arrays of objects and newline-delimited objects are accepted. Nested structures require explicit
+field paths, and arrays produce rows only through an explicit `explode`. Missing paths, non-array
+explode targets, and selected fields that still resolve to objects/arrays fail before publishing.
+See [`configs/nested_orders.yaml`](configs/nested_orders.yaml).
+
+## SCD Type 2
+
+SCD2 tracks history without embedding business meaning in Python:
+
+```yaml
+load:
+  strategy: scd2
+  keys: [entity_id]
+  tracked_columns: [region, segment]
+  effective_timestamp:
+    column: updated_at
+  history_columns:
+    valid_from: valid_from
+    valid_to: valid_to
+    is_current: is_current
+```
+
+A new key creates a current version. An unchanged tracked value does nothing. A changed value expires
+the old current version and inserts the new version in the same PostgreSQL transaction. Exact reruns
+find the existing effective version and do not duplicate history. Null keys/effective times, stale
+changes, conflicting versions, and malformed configuration fail safely. Only contract-passing rows
+participate. Run [`configs/scd2_regions_run1.yaml`](configs/scd2_regions_run1.yaml), followed by
+[`configs/scd2_regions_run2.yaml`](configs/scd2_regions_run2.yaml), to demonstrate the transition.
+
+## Backfills
+
+Incremental configs support isolated bounded runs:
+
+```bash
+etl run configs/reliability_incremental.yaml \
+  --from "2026-09-01 00:00:00" \
+  --to "2026-09-03 23:59:59"
+```
+
+The lower boundary is exclusive and the upper boundary inclusive. A backfill atomically replaces
+only that trusted interval, so repeating the same window is idempotent. It does not read, overwrite,
+or advance the normal production watermark. The ledger records `run_mode`, `backfill_from`, and
+`backfill_to` along with source type and SCD2 row metrics.
+
 ## Atomicity and reruns
 
 Every run gets a unique staging table. Staging creation, row copy, trusted-table mutation, staging
@@ -421,9 +520,10 @@ copying, validation failures for every operator, execution of all five operators
 dataset shapes, profiler inference and statistics, exact duplicate counting, starter YAML output,
 runtime blocking before review, contract validation/evaluation, privacy handling, quarantine
 persistence, schema hash determinism, drift detection/policies/history, incremental first/later/no-
-data runs, failure-safe watermarks and retries, business-key upserts, full rerun idempotency, trusted-
-row exclusion, and row-count accounting. A live PostgreSQL instance is needed for the end-to-end
-CLI verification, but not for these unit tests.
+data runs, failure-safe watermarks and retries, business-key upserts, SCD2 history and rollback,
+bounded backfills, flat/nested/NDJSON normalization, Parquet schemas, PostgreSQL source snapshots,
+full rerun idempotency, trusted-row exclusion, and row-count accounting. A live PostgreSQL instance
+is needed for the end-to-end CLI verification, but not for these unit tests.
 
 ## Repository map
 
@@ -434,16 +534,24 @@ configs/students_quality.yaml       contracts, privacy policies, and quality fai
 configs/reliability_incremental.yaml incremental/watermark demo
 configs/reliability_upsert.yaml     business-key merge demo
 configs/schema_drift_*.yaml         raw added-column drift demo
+configs/scd2_regions_*.yaml         two-run SCD2 history demo
+configs/nested_orders.yaml          configured nested JSON explosion
+configs/parquet_weather.yaml        Parquet source demo
+configs/postgres_assets.yaml        table-based PostgreSQL source demo
 data/incoming/customers.csv         example input
 data/incoming/sensor_readings.csv   second example input
 data/incoming/students.csv          profiling/onboarding example
 data/incoming/student_quality.csv   quality/quarantine example
 data/incoming/reliability_*.csv     incremental and upsert examples
 data/incoming/schema_drift_*.csv    two-run schema drift example
+data/incoming/scd2_regions_*.csv    changing SCD2 source snapshots
+data/incoming/nested_orders.json    nested JSON source
+data/incoming/weather_readings.parquet embedded-schema source
 data/raw/                            run-scoped untouched copies (Git-ignored)
 src/metadata_etl/onboarding/        profiler and starter YAML generator
 src/metadata_etl/quality/           contract registry, evaluation, and privacy handling
 src/metadata_etl/schema/            deterministic fingerprints and drift comparison
+src/metadata_etl/connectors/        generic source connector registry
 src/metadata_etl/config.py          parsing and validation
 src/metadata_etl/sql_compiler.py    generic SQL compilation
 src/metadata_etl/transformations/   registry and reusable operators

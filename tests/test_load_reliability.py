@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import Any, ClassVar, Self
 
@@ -20,6 +21,7 @@ class StatefulStore:
     canonical_schema_json: ClassVar[str | None] = None
     drift_events: ClassVar[list[Any]] = []
     finishes: ClassVar[list[dict[str, Any]]] = []
+    starts: ClassVar[list[dict[str, Any]]] = []
     fail_next_publish: ClassVar[bool] = False
 
     def __init__(self, dsn: str) -> None:
@@ -40,13 +42,14 @@ class StatefulStore:
         cls.canonical_schema_json = None
         cls.drift_events = []
         cls.finishes = []
+        cls.starts = []
         cls.fail_next_publish = False
 
     def ensure_metadata_tables(self) -> None:
         return None
 
     def start_run(self, **values: Any) -> None:
-        return None
+        type(self).starts.append(values)
 
     def finish_run(self, **values: Any) -> None:
         type(self).finishes.append(values)
@@ -105,6 +108,20 @@ class StatefulStore:
         type(self).trusted = list(existing.values())
         type(self).columns = names
         return LoadMetrics(len(rows), inserted, updated)
+
+    def publish_backfill(self, **values: Any) -> LoadMetrics:
+        self._maybe_fail()
+        names = [item[0] for item in values["columns"]]
+        watermark_index = names.index(values["watermark_column"])
+        lower = datetime.fromisoformat(values["backfill_from"])
+        upper = datetime.fromisoformat(values["backfill_to"])
+        retained = [
+            row for row in type(self).trusted if not (lower < row[watermark_index] <= upper)
+        ]
+        replaced = len(type(self).trusted) - len(retained)
+        rows = list(values["rows"])
+        type(self).trusted = retained + rows
+        return LoadMetrics(len(rows), max(len(rows) - replaced, 0), replaced)
 
 
 def _write_config(
@@ -258,6 +275,36 @@ def test_full_rerun_replaces_the_same_trusted_result(
     pipeline.run_pipeline(config)
 
     assert len(StatefulStore.trusted) == 1
+
+
+def test_backfill_is_bounded_idempotent_and_does_not_change_production_watermark(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _setup(monkeypatch)
+    source = tmp_path / "events.csv"
+    source.write_text(
+        "ID,Value,Updated At\nA,one,2026-09-01 09:00:00\n"
+        "B,two,2026-09-02 10:00:00\nC,three,2026-09-03 11:00:00\n",
+        encoding="utf-8",
+    )
+    config = _write_config(tmp_path, dataset="events", source=source, strategy="incremental")
+    pipeline.run_pipeline(config)
+    production_watermark = StatefulStore.watermark
+
+    first = pipeline.run_pipeline(
+        config, backfill_from="2026-09-01 23:59:59", backfill_to="2026-09-02 23:59:59"
+    )
+    second = pipeline.run_pipeline(
+        config, backfill_from="2026-09-01 23:59:59", backfill_to="2026-09-02 23:59:59"
+    )
+
+    assert first.rows_extracted == second.rows_extracted == 1
+    assert StatefulStore.watermark == production_watermark
+    assert len(StatefulStore.trusted) == 3
+    assert len({row[0] for row in StatefulStore.trusted}) == 3
+    assert StatefulStore.starts[-1]["run_mode"] == "backfill"
+    assert StatefulStore.starts[-1]["backfill_from"] == "2026-09-01 23:59:59"
+    assert StatefulStore.starts[-1]["backfill_to"] == "2026-09-02 23:59:59"
 
 
 def test_fail_policy_stops_before_publish_and_persists_drift(

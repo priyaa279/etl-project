@@ -25,6 +25,12 @@ CREATE TABLE IF NOT EXISTS etl_meta.etl_run_ledger (
     drift_status TEXT,
     watermark_before TEXT,
     watermark_after TEXT,
+    source_type TEXT,
+    run_mode TEXT,
+    backfill_from TEXT,
+    backfill_to TEXT,
+    rows_expired BIGINT,
+    rows_history_inserted BIGINT,
     duration_seconds DOUBLE PRECISION,
     error_message TEXT
 );
@@ -44,6 +50,12 @@ ALTER TABLE etl_meta.etl_run_ledger ADD COLUMN IF NOT EXISTS canonical_schema_js
 ALTER TABLE etl_meta.etl_run_ledger ADD COLUMN IF NOT EXISTS drift_status TEXT;
 ALTER TABLE etl_meta.etl_run_ledger ADD COLUMN IF NOT EXISTS watermark_before TEXT;
 ALTER TABLE etl_meta.etl_run_ledger ADD COLUMN IF NOT EXISTS watermark_after TEXT;
+ALTER TABLE etl_meta.etl_run_ledger ADD COLUMN IF NOT EXISTS source_type TEXT;
+ALTER TABLE etl_meta.etl_run_ledger ADD COLUMN IF NOT EXISTS run_mode TEXT;
+ALTER TABLE etl_meta.etl_run_ledger ADD COLUMN IF NOT EXISTS backfill_from TEXT;
+ALTER TABLE etl_meta.etl_run_ledger ADD COLUMN IF NOT EXISTS backfill_to TEXT;
+ALTER TABLE etl_meta.etl_run_ledger ADD COLUMN IF NOT EXISTS rows_expired BIGINT;
+ALTER TABLE etl_meta.etl_run_ledger ADD COLUMN IF NOT EXISTS rows_history_inserted BIGINT;
 
 CREATE TABLE IF NOT EXISTS etl_meta.data_quality_results (
     run_id TEXT NOT NULL,

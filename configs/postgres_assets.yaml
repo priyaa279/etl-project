@@ -1,0 +1,40 @@
+config_schema_version: "1.0"
+dataset:
+  name: postgres_assets
+review:
+  required: true
+  approved: true
+  approved_by: priyaa
+source:
+  type: postgres
+  connection_env: SOURCE_POSTGRES_DSN
+  table: public.source_assets
+runtime:
+  raw_root: data/raw
+normalization:
+  trim_strings: true
+  null_tokens: [""]
+columns:
+  asset_id:
+    type: string
+    nullable: false
+  asset_name:
+    type: string
+    nullable: false
+  acquired_on:
+    type: date
+    format: "%Y-%m-%d"
+    nullable: false
+transformations: []
+contracts: []
+schema_drift:
+  added_columns: warn
+  removed_columns: fail
+  datatype_change: fail
+  canonical_change: fail
+load:
+  strategy: full
+  connection_env: ETL_POSTGRES_DSN
+  schema: public
+  staging_table: postgres_assets_staging
+  target_table: postgres_assets

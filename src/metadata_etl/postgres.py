@@ -9,6 +9,7 @@ from typing import Any, Self
 import psycopg
 from psycopg import sql
 
+from metadata_etl.config import SCD2Config
 from metadata_etl.errors import LoadError
 
 
@@ -17,6 +18,8 @@ class LoadMetrics:
     rows_loaded: int
     rows_inserted: int
     rows_updated: int
+    rows_expired: int = 0
+    rows_history_inserted: int = 0
 
 
 DUCKDB_TO_POSTGRES = {
@@ -97,6 +100,12 @@ class PostgresStore:
                     drift_status TEXT,
                     watermark_before TEXT,
                     watermark_after TEXT,
+                    source_type TEXT,
+                    run_mode TEXT,
+                    backfill_from TEXT,
+                    backfill_to TEXT,
+                    rows_expired BIGINT,
+                    rows_history_inserted BIGINT,
                     duration_seconds DOUBLE PRECISION,
                     error_message TEXT
                 )
@@ -120,6 +129,12 @@ class PostgresStore:
                 "drift_status TEXT",
                 "watermark_before TEXT",
                 "watermark_after TEXT",
+                "source_type TEXT",
+                "run_mode TEXT",
+                "backfill_from TEXT",
+                "backfill_to TEXT",
+                "rows_expired BIGINT",
+                "rows_history_inserted BIGINT",
             ):
                 self.conn.execute(
                     f"ALTER TABLE etl_meta.etl_run_ledger ADD COLUMN IF NOT EXISTS {definition}"
@@ -193,16 +208,32 @@ class PostgresStore:
         config_hash: str,
         git_sha: str,
         started_at: datetime,
+        source_type: str = "csv",
+        run_mode: str = "normal",
+        backfill_from: str | None = None,
+        backfill_to: str | None = None,
     ) -> None:
         with self.conn.transaction():
             self.conn.execute(
                 """
                 INSERT INTO etl_meta.etl_run_ledger (
                     run_id, dataset, config_schema_version, config_hash,
-                    git_commit_sha, status, started_at
-                ) VALUES (%s, %s, %s, %s, %s, 'RUNNING', %s)
+                    git_commit_sha, status, started_at, source_type, run_mode,
+                    backfill_from, backfill_to
+                ) VALUES (%s, %s, %s, %s, %s, 'RUNNING', %s, %s, %s, %s, %s)
                 """,
-                (run_id, dataset, schema_version, config_hash, git_sha, started_at),
+                (
+                    run_id,
+                    dataset,
+                    schema_version,
+                    config_hash,
+                    git_sha,
+                    started_at,
+                    source_type,
+                    run_mode,
+                    backfill_from,
+                    backfill_to,
+                ),
             )
 
     def finish_run(
@@ -228,6 +259,8 @@ class PostgresStore:
         drift_status: str | None = None,
         watermark_before: str | None = None,
         watermark_after: str | None = None,
+        rows_expired: int | None = None,
+        rows_history_inserted: int | None = None,
         error_message: str | None = None,
     ) -> None:
         with self.conn.transaction():
@@ -253,6 +286,8 @@ class PostgresStore:
                     drift_status = COALESCE(%s, drift_status),
                     watermark_before = COALESCE(%s, watermark_before),
                     watermark_after = COALESCE(%s, watermark_after),
+                    rows_expired = COALESCE(%s, rows_expired),
+                    rows_history_inserted = COALESCE(%s, rows_history_inserted),
                     error_message = %s
                 WHERE run_id = %s
                 """,
@@ -276,6 +311,8 @@ class PostgresStore:
                     drift_status,
                     watermark_before,
                     watermark_after,
+                    rows_expired,
+                    rows_history_inserted,
                     error_message,
                     run_id,
                 ),
@@ -623,3 +660,235 @@ class PostgresStore:
         except psycopg.Error as exc:
             raise LoadError(f"PostgreSQL upsert publish failed: {exc}") from exc
         return LoadMetrics(len(rows), len(rows) - rows_updated, rows_updated)
+
+    def publish_backfill(
+        self,
+        *,
+        destination_schema: str,
+        staging_table: str,
+        target_table: str,
+        columns: Sequence[tuple[str, Any]],
+        rows: Sequence[tuple[Any, ...]],
+        run_id: str,
+        watermark_column: str,
+        backfill_from: str,
+        backfill_to: str,
+    ) -> LoadMetrics:
+        """Atomically replace one bounded incremental interval without changing its watermark."""
+        suffix = run_id.lower().replace("-", "_")[-24:]
+        physical_staging = f"{staging_table}_{suffix}"[:63]
+        definitions = sql.SQL(", ").join(
+            sql.SQL("{} {}").format(sql.Identifier(name), _postgres_type(data_type))
+            for name, data_type in columns
+        )
+        column_list = sql.SQL(", ").join(sql.Identifier(name) for name, _ in columns)
+        staging_identifier = sql.Identifier(destination_schema, physical_staging)
+        target_identifier = sql.Identifier(destination_schema, target_table)
+        watermark_identifier = sql.Identifier(watermark_column)
+        try:
+            with self.conn.transaction():
+                self.conn.execute(
+                    sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(
+                        sql.Identifier(destination_schema)
+                    )
+                )
+                self.conn.execute(
+                    sql.SQL("CREATE TABLE {} ({})").format(staging_identifier, definitions)
+                )
+                copy_statement = sql.SQL("COPY {} ({}) FROM STDIN").format(
+                    staging_identifier, column_list
+                )
+                with self.conn.cursor().copy(copy_statement) as copy:
+                    for row in rows:
+                        copy.write_row(row)
+                self.conn.execute(
+                    sql.SQL("CREATE TABLE IF NOT EXISTS {} (LIKE {} INCLUDING ALL)").format(
+                        target_identifier, staging_identifier
+                    )
+                )
+                replaced_row = self.conn.execute(
+                    sql.SQL("SELECT count(*) FROM {} WHERE {} > %s AND {} <= %s").format(
+                        target_identifier, watermark_identifier, watermark_identifier
+                    ),
+                    (backfill_from, backfill_to),
+                ).fetchone()
+                rows_updated = int(replaced_row[0]) if replaced_row else 0
+                self.conn.execute(
+                    sql.SQL("DELETE FROM {} WHERE {} > %s AND {} <= %s").format(
+                        target_identifier, watermark_identifier, watermark_identifier
+                    ),
+                    (backfill_from, backfill_to),
+                )
+                if rows:
+                    self.conn.execute(
+                        sql.SQL("INSERT INTO {} ({}) SELECT {} FROM {}").format(
+                            target_identifier, column_list, column_list, staging_identifier
+                        )
+                    )
+                self.conn.execute(sql.SQL("DROP TABLE {}").format(staging_identifier))
+        except psycopg.Error as exc:
+            raise LoadError(f"PostgreSQL backfill publish failed: {exc}") from exc
+        return LoadMetrics(len(rows), max(len(rows) - rows_updated, 0), rows_updated)
+
+    def publish_scd2(
+        self,
+        *,
+        destination_schema: str,
+        staging_table: str,
+        target_table: str,
+        columns: Sequence[tuple[str, Any]],
+        rows: Sequence[tuple[Any, ...]],
+        run_id: str,
+        scd2: SCD2Config,
+    ) -> LoadMetrics:
+        """Apply SCD Type 2 history changes atomically using configured columns only."""
+        names = [name for name, _ in columns]
+        positions = {name: index for index, name in enumerate(names)}
+        key_positions = [positions[key] for key in scd2.keys]
+        tracked_positions = [positions[column] for column in scd2.tracked_columns]
+        effective_position = positions[scd2.effective_timestamp]
+        if any(row[effective_position] is None for row in rows):
+            raise LoadError("SCD2 effective timestamp cannot be null")
+
+        suffix = run_id.lower().replace("-", "_")[-24:]
+        physical_staging = f"{staging_table}_{suffix}"[:63]
+        source_definitions = sql.SQL(", ").join(
+            sql.SQL("{} {}").format(sql.Identifier(name), _postgres_type(data_type))
+            for name, data_type in columns
+        )
+        type_by_name = {name: data_type for name, data_type in columns}
+        history_type = _postgres_type(type_by_name[scd2.effective_timestamp])
+        history_definitions = sql.SQL(", ").join(
+            (
+                sql.SQL("{} {}").format(sql.Identifier(scd2.valid_from), history_type),
+                sql.SQL("{} {}").format(sql.Identifier(scd2.valid_to), history_type),
+                sql.SQL("{} BOOLEAN NOT NULL").format(sql.Identifier(scd2.is_current)),
+            )
+        )
+        all_definitions = sql.SQL(", ").join((source_definitions, history_definitions))
+        column_list = sql.SQL(", ").join(sql.Identifier(name) for name in names)
+        staging_identifier = sql.Identifier(destination_schema, physical_staging)
+        target_identifier = sql.Identifier(destination_schema, target_table)
+        key_predicate = sql.SQL(" AND ").join(
+            sql.SQL("{} = %s").format(sql.Identifier(key)) for key in scd2.keys
+        )
+        tracked_list = sql.SQL(", ").join(sql.Identifier(column) for column in scd2.tracked_columns)
+        insert_columns = sql.SQL(", ").join(
+            (
+                column_list,
+                sql.Identifier(scd2.valid_from),
+                sql.Identifier(scd2.valid_to),
+                sql.Identifier(scd2.is_current),
+            )
+        )
+        insert_placeholders = sql.SQL(", ").join(sql.Placeholder() for _ in range(len(names) + 3))
+        rows_inserted = 0
+        rows_expired = 0
+        rows_history_inserted = 0
+
+        ordered_rows = sorted(
+            rows,
+            key=lambda row: (
+                tuple(str(row[index]) for index in key_positions),
+                row[effective_position],
+            ),
+        )
+        try:
+            with self.conn.transaction():
+                self.conn.execute(
+                    sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(
+                        sql.Identifier(destination_schema)
+                    )
+                )
+                self.conn.execute(
+                    sql.SQL("CREATE TABLE {} ({})").format(staging_identifier, source_definitions)
+                )
+                copy_statement = sql.SQL("COPY {} ({}) FROM STDIN").format(
+                    staging_identifier, column_list
+                )
+                with self.conn.cursor().copy(copy_statement) as copy:
+                    for row in ordered_rows:
+                        copy.write_row(row)
+                self.conn.execute(
+                    sql.SQL("CREATE TABLE IF NOT EXISTS {} ({})").format(
+                        target_identifier, all_definitions
+                    )
+                )
+                self.conn.execute(
+                    sql.SQL("LOCK TABLE {} IN SHARE ROW EXCLUSIVE MODE").format(target_identifier)
+                )
+                for row in ordered_rows:
+                    key_values = tuple(row[index] for index in key_positions)
+                    if any(value is None for value in key_values):
+                        raise LoadError("SCD2 business keys cannot contain null values")
+                    tracked_values = tuple(row[index] for index in tracked_positions)
+                    effective = row[effective_position]
+                    exact = self.conn.execute(
+                        sql.SQL("SELECT {}, {} FROM {} WHERE {} AND {} = %s").format(
+                            tracked_list,
+                            sql.Identifier(scd2.is_current),
+                            target_identifier,
+                            key_predicate,
+                            sql.Identifier(scd2.valid_from),
+                        ),
+                        key_values + (effective,),
+                    ).fetchone()
+                    if exact is not None:
+                        if tuple(exact[: len(tracked_values)]) == tracked_values:
+                            continue
+                        raise LoadError(
+                            "SCD2 input conflicts with an existing version at the same effective time"
+                        )
+                    current = self.conn.execute(
+                        sql.SQL("SELECT {}, {} FROM {} WHERE {} AND {} IS TRUE FOR UPDATE").format(
+                            tracked_list,
+                            sql.Identifier(scd2.valid_from),
+                            target_identifier,
+                            key_predicate,
+                            sql.Identifier(scd2.is_current),
+                        ),
+                        key_values,
+                    ).fetchone()
+                    if (
+                        current is not None
+                        and tuple(current[: len(tracked_values)]) == tracked_values
+                    ):
+                        continue
+                    if current is not None:
+                        current_from = current[-1]
+                        if effective <= current_from:
+                            raise LoadError(
+                                "SCD2 effective timestamp must be later than the current version"
+                            )
+                        self.conn.execute(
+                            sql.SQL(
+                                "UPDATE {} SET {} = %s, {} = FALSE WHERE {} AND {} IS TRUE"
+                            ).format(
+                                target_identifier,
+                                sql.Identifier(scd2.valid_to),
+                                sql.Identifier(scd2.is_current),
+                                key_predicate,
+                                sql.Identifier(scd2.is_current),
+                            ),
+                            (effective,) + key_values,
+                        )
+                        rows_expired += 1
+                    else:
+                        rows_inserted += 1
+                    self.conn.execute(
+                        sql.SQL("INSERT INTO {} ({}) VALUES ({})").format(
+                            target_identifier, insert_columns, insert_placeholders
+                        ),
+                        tuple(row) + (effective, None, True),
+                    )
+                    rows_history_inserted += 1
+                self.conn.execute(sql.SQL("DROP TABLE {}").format(staging_identifier))
+        except psycopg.Error as exc:
+            raise LoadError(f"PostgreSQL SCD2 publish failed: {exc}") from exc
+        return LoadMetrics(
+            rows_history_inserted,
+            rows_inserted,
+            rows_expired,
+            rows_expired,
+            rows_history_inserted,
+        )

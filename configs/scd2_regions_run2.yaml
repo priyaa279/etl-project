@@ -1,0 +1,56 @@
+config_schema_version: "1.0"
+dataset:
+  name: scd2_regions
+review:
+  required: true
+  approved: true
+  approved_by: priyaa
+source:
+  type: csv
+  path: data/incoming/scd2_regions_run2.csv
+runtime:
+  raw_root: data/raw
+normalization:
+  trim_strings: true
+  null_tokens: [""]
+columns:
+  entity_id:
+    source: Entity ID
+    type: string
+    nullable: false
+  region:
+    source: Region
+    type: string
+    nullable: false
+  segment:
+    source: Segment
+    type: string
+    nullable: false
+  updated_at:
+    source: Updated At
+    type: timestamp
+    nullable: false
+transformations: []
+contracts:
+  - id: DQ001
+    type: not_null
+    column: entity_id
+schema_drift:
+  added_columns: warn
+  removed_columns: fail
+  datatype_change: fail
+  canonical_change: fail
+load:
+  strategy: scd2
+  keys: [entity_id]
+  tracked_columns: [region, segment]
+  effective_timestamp:
+    column: updated_at
+  history_columns:
+    valid_from: valid_from
+    valid_to: valid_to
+    is_current: is_current
+  connection_env: ETL_POSTGRES_DSN
+  schema: public
+  staging_table: scd2_regions_staging
+  target_table: scd2_regions

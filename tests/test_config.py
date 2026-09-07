@@ -56,11 +56,13 @@ def test_forbidden_sql_token_is_rejected(tmp_path: Path, monkeypatch: pytest.Mon
         load_config(config_path)
 
 
-def test_scd2_is_not_accepted_yet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_incomplete_scd2_config_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.chdir(ROOT)
     text = CONFIG.read_text(encoding="utf-8").replace("strategy: full", "strategy: scd2")
     config_path = tmp_path / "scd2.yaml"
     config_path.write_text(text, encoding="utf-8")
 
-    with pytest.raises(ConfigError, match="full, incremental, or upsert"):
+    with pytest.raises(ConfigError, match="load.keys must be a non-empty list for scd2"):
         load_config(config_path)

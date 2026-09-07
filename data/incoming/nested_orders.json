@@ -1,0 +1,17 @@
+{
+  "orders": [
+    {
+      "order": {"id": "O001", "date": "2026-09-01"},
+      "customer": {"id": "C001"},
+      "items": [
+        {"product_id": "P100", "quantity": 2},
+        {"product_id": "P200", "quantity": 1}
+      ]
+    },
+    {
+      "order": {"id": "O002", "date": "2026-09-02"},
+      "customer": {"id": "C002"},
+      "items": [{"product_id": "P300", "quantity": 4}]
+    }
+  ]
+}

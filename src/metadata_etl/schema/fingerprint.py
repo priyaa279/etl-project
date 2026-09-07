@@ -6,6 +6,9 @@ import json
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any
+
+import duckdb
 
 from metadata_etl.config import ColumnConfig
 from metadata_etl.errors import ExtractionError
@@ -124,3 +127,55 @@ def canonical_schema_fingerprint(columns: tuple[ColumnConfig, ...]) -> SchemaFin
         for index, column in enumerate(columns)
     )
     return SchemaFingerprint.build("canonical", fields)
+
+
+def raw_json_schema_fingerprint(payload: Any) -> SchemaFingerprint:
+    """Fingerprint nested JSON paths and observed container/scalar representations."""
+    observed: dict[str, set[str]] = {}
+
+    def visit(value: Any, path: str) -> None:
+        if value is None:
+            kind = "null"
+        elif isinstance(value, bool):
+            kind = "boolean"
+        elif isinstance(value, int):
+            kind = "integer"
+        elif isinstance(value, float):
+            kind = "decimal"
+        elif isinstance(value, str):
+            kind = "string"
+        elif isinstance(value, dict):
+            kind = "object"
+        elif isinstance(value, list):
+            kind = "array"
+        else:
+            kind = type(value).__name__
+        observed.setdefault(path, set()).add(kind)
+        if isinstance(value, dict):
+            for key in sorted(value):
+                visit(value[key], f"{path}.{key}")
+        elif isinstance(value, list):
+            for item in value:
+                visit(item, f"{path}[]")
+
+    visit(payload, "$")
+    fields = tuple(
+        SchemaField(path, "|".join(sorted(types)), index)
+        for index, (path, types) in enumerate(sorted(observed.items()))
+    )
+    return SchemaFingerprint.build("raw", fields)
+
+
+def parquet_schema_fingerprint(path: Path) -> SchemaFingerprint:
+    try:
+        with duckdb.connect(":memory:") as connection:
+            escaped = str(path.as_posix()).replace("'", "''")
+            rows = connection.execute(
+                f"DESCRIBE SELECT * FROM read_parquet('{escaped}')"
+            ).fetchall()
+    except duckdb.Error as exc:
+        raise ExtractionError(f"Could not inspect Parquet schema at {path}: {exc}") from exc
+    fields = tuple(
+        SchemaField(str(row[0]), str(row[1]).lower(), index) for index, row in enumerate(rows)
+    )
+    return SchemaFingerprint.build("raw", fields)

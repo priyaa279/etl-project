@@ -1,0 +1,41 @@
+config_schema_version: "1.0"
+dataset:
+  name: parquet_weather
+review:
+  required: true
+  approved: true
+  approved_by: priyaa
+source:
+  type: parquet
+  path: data/incoming/weather_readings.parquet
+runtime:
+  raw_root: data/raw
+normalization:
+  trim_strings: true
+  null_tokens: [""]
+columns:
+  station_id:
+    source: Station ID
+    type: string
+    nullable: false
+  temperature_c:
+    source: Temperature C
+    type: decimal
+    nullable: false
+  observed_at:
+    source: Observed At
+    type: timestamp
+    nullable: false
+transformations: []
+contracts: []
+schema_drift:
+  added_columns: warn
+  removed_columns: fail
+  datatype_change: fail
+  canonical_change: fail
+load:
+  strategy: full
+  connection_env: ETL_POSTGRES_DSN
+  schema: public
+  staging_table: parquet_weather_staging
+  target_table: parquet_weather

@@ -49,13 +49,40 @@ class WatermarkConfig:
 
 
 @dataclass(frozen=True)
+class JSONExplodeConfig:
+    path: str
+    alias: str
+    fields: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True)
+class JSONNormalizationConfig:
+    root_path: str | None
+    fields: tuple[tuple[str, str], ...]
+    explode: JSONExplodeConfig | None
+
+
+@dataclass(frozen=True)
+class SCD2Config:
+    keys: tuple[str, ...]
+    tracked_columns: tuple[str, ...]
+    effective_timestamp: str
+    valid_from: str
+    valid_to: str
+    is_current: str
+
+
+@dataclass(frozen=True)
 class ETLConfig:
     path: Path
     raw: dict[str, Any]
     config_hash: str
     schema_version: str
     dataset: str
-    source_path: Path
+    source_type: str
+    source_path: Path | None
+    source_connection_env: str | None
+    source_table: tuple[str, str] | None
     delimiter: str
     raw_root: Path
     trim_strings: bool
@@ -71,6 +98,8 @@ class ETLConfig:
     load_keys: tuple[str, ...]
     watermark: WatermarkConfig | None
     schema_drift: dict[str, str]
+    json_normalization: JSONNormalizationConfig | None
+    scd2: SCD2Config | None
 
     @property
     def dsn(self) -> str:
@@ -78,6 +107,18 @@ class ETLConfig:
         if not value:
             raise ConfigError(
                 f"Environment variable {self.connection_env!r} is required for the PostgreSQL load"
+            )
+        return value
+
+    @property
+    def source_dsn(self) -> str:
+        if not self.source_connection_env:
+            raise ConfigError("This source does not define a PostgreSQL connection")
+        value = os.getenv(self.source_connection_env)
+        if not value:
+            raise ConfigError(
+                f"Environment variable {self.source_connection_env!r} is required for the "
+                "PostgreSQL source"
             )
         return value
 
@@ -167,14 +208,30 @@ def load_config(config_path: str | Path, *, require_source: bool = True) -> ETLC
 
     source = _require_mapping(root.get("source"), "source")
     source_type = _require_string(source.get("type"), "source.type").lower()
-    if source_type != "csv":
-        raise ConfigError("Milestone 1 supports source.type: csv only")
-    source_value = _require_string(source.get("path"), "source.path")
-    source_path = Path(source_value)
-    if not source_path.is_absolute():
-        source_path = (Path.cwd() / source_path).resolve()
-    if require_source and not source_path.is_file():
-        raise ConfigError(f"CSV source does not exist: {source_path}")
+    if source_type not in {"csv", "json", "parquet", "postgres"}:
+        raise ConfigError("source.type must be csv, json, parquet, or postgres")
+    source_path: Path | None = None
+    source_connection_env: str | None = None
+    source_table: tuple[str, str] | None = None
+    if source_type in {"csv", "json", "parquet"}:
+        source_value = _require_string(source.get("path"), "source.path")
+        source_path = Path(source_value)
+        if not source_path.is_absolute():
+            source_path = (Path.cwd() / source_path).resolve()
+        if require_source and not source_path.is_file():
+            raise ConfigError(f"{source_type.upper()} source does not exist: {source_path}")
+    else:
+        source_connection_env = _identifier(source.get("connection_env"), "source.connection_env")
+        table_value = _require_string(source.get("table"), "source.table")
+        table_parts = table_value.split(".")
+        if len(table_parts) != 2:
+            raise ConfigError("source.table must use schema.table notation")
+        source_table = (
+            _identifier(table_parts[0], "source.table schema"),
+            _identifier(table_parts[1], "source.table name"),
+        )
+        if "query" in source:
+            raise ConfigError("Custom PostgreSQL source queries are not supported yet")
 
     options = _require_mapping(source.get("options", {}), "source.options")
     delimiter = options.get("delimiter", ",")
@@ -196,6 +253,54 @@ def load_config(config_path: str | Path, *, require_source: bool = True) -> ETLC
         isinstance(token, str) for token in null_tokens_value
     ):
         raise ConfigError("normalization.null_tokens must be a list of strings")
+
+    json_normalization: JSONNormalizationConfig | None = None
+    json_value = normalization.get("json")
+    if json_value is not None:
+        if source_type != "json":
+            raise ConfigError("normalization.json is supported only for source.type: json")
+        json_mapping = _require_mapping(json_value, "normalization.json")
+        root_path = json_mapping.get("root_path")
+        if root_path is not None:
+            root_path = _require_string(root_path, "normalization.json.root_path")
+        field_mapping = _require_mapping(
+            json_mapping.get("fields", {}), "normalization.json.fields"
+        )
+        fields = tuple(
+            (
+                _identifier(name, f"normalization.json.fields.{name}"),
+                _require_string(value, f"normalization.json.fields.{name}"),
+            )
+            for name, value in field_mapping.items()
+        )
+        explode_config: JSONExplodeConfig | None = None
+        if "explode" in json_mapping:
+            explode = _require_mapping(json_mapping["explode"], "normalization.json.explode")
+            explode_fields_mapping = _require_mapping(
+                explode.get("fields"), "normalization.json.explode.fields"
+            )
+            if not explode_fields_mapping:
+                raise ConfigError("normalization.json.explode.fields cannot be empty")
+            explode_fields = tuple(
+                (
+                    _identifier(name, f"normalization.json.explode.fields.{name}"),
+                    _require_string(value, f"normalization.json.explode.fields.{name}"),
+                )
+                for name, value in explode_fields_mapping.items()
+            )
+            explode_config = JSONExplodeConfig(
+                _require_string(explode.get("path"), "normalization.json.explode.path"),
+                _identifier(explode.get("as"), "normalization.json.explode.as"),
+                explode_fields,
+            )
+        output_names = [name for name, _ in fields]
+        if explode_config:
+            output_names.extend(name for name, _ in explode_config.fields)
+        if len(set(output_names)) != len(output_names):
+            raise ConfigError("normalization.json output field names must be unique")
+        if not output_names:
+            raise ConfigError("normalization.json must configure fields or an explode")
+        json_normalization = JSONNormalizationConfig(root_path, fields, explode_config)
 
     column_section = _require_mapping(root.get("columns"), "columns")
     if not column_section:
@@ -248,6 +353,17 @@ def load_config(config_path: str | Path, *, require_source: bool = True) -> ETLC
                 quarantine_value,
             )
         )
+
+    if json_normalization is not None:
+        normalized_names = {name for name, _ in json_normalization.fields}
+        if json_normalization.explode:
+            normalized_names.update(name for name, _ in json_normalization.explode.fields)
+        missing_json_fields = {column.source for column in columns} - normalized_names
+        if missing_json_fields:
+            raise ConfigError(
+                "columns reference JSON fields not produced by normalization.json: "
+                f"{sorted(missing_json_fields)}"
+            )
 
     transform_values = root.get("transformations", [])
     if not isinstance(transform_values, list):
@@ -308,8 +424,8 @@ def load_config(config_path: str | Path, *, require_source: bool = True) -> ETLC
 
     load = _require_mapping(root.get("load"), "load")
     strategy = _require_string(load.get("strategy"), "load.strategy").lower()
-    if strategy not in {"full", "incremental", "upsert"}:
-        raise ConfigError("load.strategy must be full, incremental, or upsert")
+    if strategy not in {"full", "incremental", "upsert", "scd2"}:
+        raise ConfigError("load.strategy must be full, incremental, upsert, or scd2")
     connection_env = _identifier(
         load.get("connection_env", "ETL_POSTGRES_DSN"), "load.connection_env"
     )
@@ -319,6 +435,7 @@ def load_config(config_path: str | Path, *, require_source: bool = True) -> ETLC
 
     load_keys: tuple[str, ...] = ()
     watermark: WatermarkConfig | None = None
+    scd2: SCD2Config | None = None
     if strategy == "upsert":
         keys_value = load.get("keys")
         if not isinstance(keys_value, list) or not keys_value:
@@ -334,7 +451,7 @@ def load_config(config_path: str | Path, *, require_source: bool = True) -> ETLC
                     f"load.keys references unknown post-transformation column {key!r}"
                 )
         load_keys = keys
-    elif "keys" in load:
+    elif strategy != "scd2" and "keys" in load:
         raise ConfigError("load.keys is supported only for load.strategy: upsert")
 
     if strategy == "incremental":
@@ -368,6 +485,52 @@ def load_config(config_path: str | Path, *, require_source: bool = True) -> ETLC
     elif "watermark" in load:
         raise ConfigError("load.watermark is supported only for load.strategy: incremental")
 
+    if strategy == "scd2":
+        keys_value = load.get("keys")
+        if not isinstance(keys_value, list) or not keys_value:
+            raise ConfigError("load.keys must be a non-empty list for scd2")
+        keys = tuple(
+            _identifier(value, f"load.keys[{index}]") for index, value in enumerate(keys_value)
+        )
+        if len(set(keys)) != len(keys):
+            raise ConfigError("load.keys cannot contain duplicate columns")
+        tracked_value = load.get("tracked_columns")
+        if not isinstance(tracked_value, list) or not tracked_value:
+            raise ConfigError("load.tracked_columns must be a non-empty list for scd2")
+        tracked = tuple(
+            _identifier(value, f"load.tracked_columns[{index}]")
+            for index, value in enumerate(tracked_value)
+        )
+        if len(set(tracked)) != len(tracked):
+            raise ConfigError("load.tracked_columns cannot contain duplicate columns")
+        for name in keys + tracked:
+            if name not in known_schema:
+                raise ConfigError(f"SCD2 configuration references unknown column {name!r}")
+        if set(keys) & set(tracked):
+            raise ConfigError("load.tracked_columns cannot overlap load.keys")
+        effective = _require_mapping(load.get("effective_timestamp"), "load.effective_timestamp")
+        effective_column = _identifier(effective.get("column"), "load.effective_timestamp.column")
+        if effective_column not in known_schema or known_schema[effective_column] not in {
+            "date",
+            "timestamp",
+        }:
+            raise ConfigError(
+                "load.effective_timestamp.column must reference a date or timestamp column"
+            )
+        history = _require_mapping(load.get("history_columns"), "load.history_columns")
+        valid_from = _identifier(history.get("valid_from"), "load.history_columns.valid_from")
+        valid_to = _identifier(history.get("valid_to"), "load.history_columns.valid_to")
+        is_current = _identifier(history.get("is_current"), "load.history_columns.is_current")
+        history_names = {valid_from, valid_to, is_current}
+        if len(history_names) != 3:
+            raise ConfigError("SCD2 history column names must be distinct")
+        if history_names & set(known_schema):
+            raise ConfigError("SCD2 history columns cannot overlap data columns")
+        if history_names & (set(keys) | set(tracked) | {effective_column}):
+            raise ConfigError("SCD2 tracked/key/effective columns cannot use history columns")
+        load_keys = keys
+        scd2 = SCD2Config(keys, tracked, effective_column, valid_from, valid_to, is_current)
+
     config_hash = hashlib.sha256(path.read_bytes()).hexdigest()
 
     return ETLConfig(
@@ -376,7 +539,10 @@ def load_config(config_path: str | Path, *, require_source: bool = True) -> ETLC
         config_hash=config_hash,
         schema_version=schema_version,
         dataset=dataset,
+        source_type=source_type,
         source_path=source_path,
+        source_connection_env=source_connection_env,
+        source_table=source_table,
         delimiter=delimiter,
         raw_root=raw_root,
         trim_strings=trim_strings,
@@ -392,4 +558,6 @@ def load_config(config_path: str | Path, *, require_source: bool = True) -> ETLC
         load_keys=load_keys,
         watermark=watermark,
         schema_drift=schema_drift,
+        json_normalization=json_normalization,
+        scd2=scd2,
     )

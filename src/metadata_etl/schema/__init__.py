@@ -3,7 +3,9 @@ from metadata_etl.schema.fingerprint import (
     SchemaField,
     SchemaFingerprint,
     canonical_schema_fingerprint,
+    parquet_schema_fingerprint,
     raw_csv_schema_fingerprint,
+    raw_json_schema_fingerprint,
 )
 
 __all__ = [
@@ -13,5 +15,7 @@ __all__ = [
     "SchemaFingerprint",
     "canonical_schema_fingerprint",
     "detect_schema_drift",
+    "parquet_schema_fingerprint",
     "raw_csv_schema_fingerprint",
+    "raw_json_schema_fingerprint",
 ]

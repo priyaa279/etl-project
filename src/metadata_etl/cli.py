@@ -23,6 +23,8 @@ def _parser() -> argparse.ArgumentParser:
 
     run = subparsers.add_parser("run", help="Execute an approved YAML configuration")
     run.add_argument("config", type=Path)
+    run.add_argument("--from", dest="backfill_from", help="Exclusive backfill lower boundary")
+    run.add_argument("--to", dest="backfill_to", help="Inclusive backfill upper boundary")
 
     profile = subparsers.add_parser("profile", help="Profile a CSV and propose a starter config")
     profile.add_argument("source", type=Path)
@@ -80,7 +82,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "run":
             from metadata_etl.pipeline import run_pipeline
 
-            result = run_pipeline(args.config)
+            result = run_pipeline(
+                args.config,
+                backfill_from=args.backfill_from,
+                backfill_to=args.backfill_to,
+            )
             print(json.dumps(result.to_dict(), indent=2))
             return 0
     except ETLError as exc:
