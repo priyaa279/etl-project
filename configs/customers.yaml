@@ -8,6 +8,12 @@ review:
   approved: true
   approved_by: priyaa
 
+orchestration:
+  enabled: true
+  schedule: "0 2 * * *"
+  retries: 2
+  retry_delay_minutes: 5
+
 source:
   type: csv
   path: data/incoming/customers.csv
@@ -81,4 +87,3 @@ load:
   schema: public
   staging_table: customers_staging
   target_table: customers
-

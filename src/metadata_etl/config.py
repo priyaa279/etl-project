@@ -73,6 +73,14 @@ class SCD2Config:
 
 
 @dataclass(frozen=True)
+class OrchestrationConfig:
+    enabled: bool
+    schedule: str | None
+    retries: int
+    retry_delay_minutes: int
+
+
+@dataclass(frozen=True)
 class ETLConfig:
     path: Path
     raw: dict[str, Any]
@@ -100,6 +108,7 @@ class ETLConfig:
     schema_drift: dict[str, str]
     json_normalization: JSONNormalizationConfig | None
     scd2: SCD2Config | None
+    orchestration: OrchestrationConfig
 
     @property
     def dsn(self) -> str:
@@ -205,6 +214,46 @@ def load_config(config_path: str | Path, *, require_source: bool = True) -> ETLC
 
     dataset_section = _require_mapping(root.get("dataset"), "dataset")
     dataset = _identifier(dataset_section.get("name"), "dataset.name")
+
+    orchestration_value = _require_mapping(root.get("orchestration", {}), "orchestration")
+    orchestration_enabled = orchestration_value.get("enabled", False)
+    if not isinstance(orchestration_enabled, bool):
+        raise ConfigError("orchestration.enabled must be true or false")
+    orchestration_schedule = orchestration_value.get("schedule")
+    if orchestration_schedule is not None:
+        orchestration_schedule = _require_string(orchestration_schedule, "orchestration.schedule")
+    if orchestration_enabled and orchestration_schedule is None:
+        raise ConfigError("orchestration.schedule is required when orchestration is enabled")
+    orchestration_retries = orchestration_value.get("retries", 0)
+    if (
+        not isinstance(orchestration_retries, int)
+        or isinstance(orchestration_retries, bool)
+        or orchestration_retries < 0
+    ):
+        raise ConfigError("orchestration.retries must be a non-negative integer")
+    retry_delay_minutes = orchestration_value.get("retry_delay_minutes", 5)
+    if (
+        not isinstance(retry_delay_minutes, int)
+        or isinstance(retry_delay_minutes, bool)
+        or retry_delay_minutes < 1
+    ):
+        raise ConfigError("orchestration.retry_delay_minutes must be a positive integer")
+    unknown_orchestration = set(orchestration_value) - {
+        "enabled",
+        "schedule",
+        "retries",
+        "retry_delay_minutes",
+    }
+    if unknown_orchestration:
+        raise ConfigError(
+            f"orchestration contains unsupported settings: {sorted(unknown_orchestration)}"
+        )
+    orchestration = OrchestrationConfig(
+        orchestration_enabled,
+        orchestration_schedule,
+        orchestration_retries,
+        retry_delay_minutes,
+    )
 
     source = _require_mapping(root.get("source"), "source")
     source_type = _require_string(source.get("type"), "source.type").lower()
@@ -560,4 +609,5 @@ def load_config(config_path: str | Path, *, require_source: bool = True) -> ETLC
         schema_drift=schema_drift,
         json_normalization=json_normalization,
         scd2=scd2,
+        orchestration=orchestration,
     )

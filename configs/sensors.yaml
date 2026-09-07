@@ -8,6 +8,12 @@ review:
   approved: true
   approved_by: priyaa
 
+orchestration:
+  enabled: true
+  schedule: "0 3 * * *"
+  retries: 2
+  retry_delay_minutes: 5
+
 source:
   type: csv
   path: data/incoming/sensor_readings.csv

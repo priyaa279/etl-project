@@ -8,6 +8,7 @@ from pathlib import Path
 from metadata_etl.config import load_config
 from metadata_etl.errors import ETLError
 from metadata_etl.sql_compiler import compile_transform_sql
+from metadata_etl.structured_logging import configure_logging, emit_event, redact_text
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -20,6 +21,16 @@ def _parser() -> argparse.ArgumentParser:
     validate = subparsers.add_parser("validate", help="Validate an approved YAML configuration")
     validate.add_argument("config", type=Path)
     validate.add_argument("--show-sql", action="store_true", help="Print the compiled DuckDB SQL")
+
+    validate_all = subparsers.add_parser(
+        "validate-all", help="Validate every top-level runnable YAML config in a directory"
+    )
+    validate_all.add_argument("config_dir", type=Path)
+    validate_all.add_argument(
+        "--require-source-bindings",
+        action="store_true",
+        help="Require credentials and live source binding for PostgreSQL source configs",
+    )
 
     run = subparsers.add_parser("run", help="Execute an approved YAML configuration")
     run.add_argument("config", type=Path)
@@ -38,6 +49,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    configure_logging()
     args = _parser().parse_args(argv)
     try:
         if args.command == "profile":
@@ -65,6 +77,13 @@ def main(argv: list[str] | None = None) -> int:
             from metadata_etl.validation import validate_plan
 
             validate_plan(config)
+            emit_event(
+                "CONFIG_VALIDATED",
+                dataset=config.dataset,
+                stage="CONFIG",
+                source_type=config.source_type,
+                load_strategy=config.load_strategy,
+            )
             output: dict[str, object] = {
                 "status": "VALID",
                 "dataset": config.dataset,
@@ -79,6 +98,31 @@ def main(argv: list[str] | None = None) -> int:
                 print(compile_transform_sql(config))
             return 0
 
+        if args.command == "validate-all":
+            from metadata_etl.orchestration import validate_all_configs
+
+            validations = validate_all_configs(
+                args.config_dir,
+                require_source_bindings=args.require_source_bindings,
+            )
+            print(
+                json.dumps(
+                    {
+                        "status": "VALID",
+                        "configs": [
+                            {
+                                "path": str(item.path),
+                                "dataset": item.dataset,
+                                "mode": item.mode,
+                            }
+                            for item in validations
+                        ],
+                    },
+                    indent=2,
+                )
+            )
+            return 0
+
         if args.command == "run":
             from metadata_etl.pipeline import run_pipeline
 
@@ -90,8 +134,11 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(result.to_dict(), indent=2))
             return 0
     except ETLError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        print(f"ERROR: {redact_text(exc)}", file=sys.stderr)
         return 2
+    except Exception as exc:  # noqa: BLE001  # pragma: no cover - safe process boundary
+        print(f"ERROR: unexpected {type(exc).__name__}", file=sys.stderr)
+        return 3
     return 1
 
 

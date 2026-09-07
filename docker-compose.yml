@@ -1,20 +1,123 @@
+x-airflow-environment: &airflow-environment
+  AIRFLOW__CORE__EXECUTOR: LocalExecutor
+  AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+  AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+  AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-api-server:8080/execution/
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg://${ETL_DB_USER:-etl}:${ETL_DB_PASSWORD}@postgres:5432/${ETL_DB_NAME:-etl}
+  AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET}
+  AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
+  AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: ${AIRFLOW_ADMIN_USER:-admin}:admin
+  AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+  ETL_CONFIG_DIR: /opt/airflow/configs
+  ETL_GIT_COMMIT_SHA: ${ETL_GIT_COMMIT_SHA:-UNAVAILABLE}
+  ETL_LOG_FORMAT: json
+  ETL_POSTGRES_DSN: postgresql://${ETL_DB_USER:-etl}:${ETL_DB_PASSWORD}@postgres:5432/${ETL_DB_NAME:-etl}
+  SOURCE_POSTGRES_DSN: postgresql://${ETL_DB_USER:-etl}:${ETL_DB_PASSWORD}@postgres:5432/${ETL_DB_NAME:-etl}
+
+x-airflow-common: &airflow-common
+  build:
+    context: .
+    dockerfile: Dockerfile.airflow
+    args:
+      AIRFLOW_VERSION: 3.1.7
+  environment: *airflow-environment
+  user: "${AIRFLOW_UID:-50000}:0"
+  volumes:
+    - ./airflow/dags:/opt/airflow/dags:ro
+    - ./airflow/logs:/opt/airflow/logs
+    - ./airflow/config:/opt/airflow/config
+    - ./configs:/opt/airflow/configs:ro
+    - ./data:/opt/airflow/data
+  depends_on:
+    postgres:
+      condition: service_healthy
+
 services:
   postgres:
-    image: postgres:17-alpine
+    image: postgres:17.6-alpine
     environment:
-      POSTGRES_USER: etl
-      POSTGRES_PASSWORD: etl
-      POSTGRES_DB: etl
+      POSTGRES_USER: ${ETL_DB_USER:-etl}
+      POSTGRES_PASSWORD: ${ETL_DB_PASSWORD}
+      POSTGRES_DB: ${ETL_DB_NAME:-etl}
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U etl -d etl"]
+      test: ["CMD-SHELL", "pg_isready -U ${ETL_DB_USER:-etl} -d ${ETL_DB_NAME:-etl}"]
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 20
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
+  etl:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    profiles: ["tools"]
+    environment:
+      ETL_GIT_COMMIT_SHA: ${ETL_GIT_COMMIT_SHA:-UNAVAILABLE}
+      ETL_LOG_FORMAT: json
+      ETL_POSTGRES_DSN: postgresql://${ETL_DB_USER:-etl}:${ETL_DB_PASSWORD}@postgres:5432/${ETL_DB_NAME:-etl}
+      SOURCE_POSTGRES_DSN: postgresql://${ETL_DB_USER:-etl}:${ETL_DB_PASSWORD}@postgres:5432/${ETL_DB_NAME:-etl}
+    volumes:
+      - ./configs:/app/configs:ro
+      - ./data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  airflow-init:
+    <<: *airflow-common
+    command: ["airflow", "db", "migrate"]
+    restart: "no"
+
+  airflow-api-server:
+    <<: *airflow-common
+    command: ["airflow", "api-server"]
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+    restart: unless-stopped
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: ["airflow", "scheduler"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+      airflow-api-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+    restart: unless-stopped
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: ["airflow", "dag-processor"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+      airflow-api-server:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   postgres_data:
-

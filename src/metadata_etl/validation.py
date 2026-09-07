@@ -14,7 +14,7 @@ from metadata_etl.sql_compiler import compile_transform_sql
 def validate_plan(config: ETLConfig) -> None:
     """Bind the compiled plan to the source schema without loading PostgreSQL."""
     try:
-        with tempfile.TemporaryDirectory(prefix=".etl-validate-", dir=config.path.parent) as temp:
+        with tempfile.TemporaryDirectory(prefix=".etl-validate-") as temp:
             extracted = (
                 default_connector_registry()
                 .get(config.source_type)

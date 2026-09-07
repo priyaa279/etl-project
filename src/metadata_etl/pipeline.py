@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import os
 import shutil
 import subprocess
 import time
@@ -23,6 +25,7 @@ from metadata_etl.schema import (
     detect_schema_drift,
 )
 from metadata_etl.sql_compiler import compile_canonical_sql, compile_transform_sql
+from metadata_etl.structured_logging import emit_event, redact_text
 from metadata_etl.transformations.sql import quote_identifier
 
 
@@ -65,6 +68,9 @@ def _create_run_id() -> str:
 
 
 def _git_sha(config_path: Path) -> str:
+    injected_sha = os.getenv("ETL_GIT_COMMIT_SHA")
+    if injected_sha:
+        return injected_sha
     git = shutil.which("git")
     if not git:
         return "UNAVAILABLE"
@@ -211,6 +217,13 @@ def run_pipeline(
 ) -> RunResult:
     """Execute an approved source configuration through the generic ETL runtime."""
     config = load_config(config_path)
+    emit_event(
+        "CONFIG_VALIDATED",
+        dataset=config.dataset,
+        stage="CONFIG",
+        source_type=config.source_type,
+        load_strategy=config.load_strategy,
+    )
     if (backfill_from is None) != (backfill_to is None):
         raise ETLError("Backfill requires both --from and --to")
     run_mode = "backfill" if backfill_from is not None else "normal"
@@ -254,11 +267,34 @@ def run_pipeline(
             backfill_from=backfill_from,
             backfill_to=backfill_to,
         )
+        emit_event(
+            "RUN_STARTED",
+            run_id=run_id,
+            dataset=config.dataset,
+            stage="RUN",
+            source_type=config.source_type,
+            load_strategy=config.load_strategy,
+            run_mode=run_mode,
+        )
         try:
             extracted = (
                 default_connector_registry()
                 .get(config.source_type)
                 .extract(config, run_id, config.raw_root)
+            )
+            emit_event(
+                "SOURCE_EXTRACTED",
+                run_id=run_id,
+                dataset=config.dataset,
+                stage="EXTRACT",
+                source_type=config.source_type,
+            )
+            emit_event(
+                "RAW_PRESERVED",
+                run_id=run_id,
+                dataset=config.dataset,
+                stage="RAW",
+                source_type=config.source_type,
             )
             raw_schema = extracted.raw_schema
             canonical_schema = canonical_schema_fingerprint(config.columns)
@@ -300,6 +336,13 @@ def run_pipeline(
                 raise SchemaDriftError(
                     f"Schema drift violates configured policy: {', '.join(failed_types)}"
                 )
+            emit_event(
+                "SCHEMA_CHECKED",
+                run_id=run_id,
+                dataset=config.dataset,
+                stage="SCHEMA",
+                drift_status=drift_status,
+            )
 
             extraction_watermark: object | None = lower_boundary
             if config.watermark is not None and run_mode == "normal":
@@ -313,6 +356,13 @@ def run_pipeline(
                 config, extracted, extraction_watermark, upper_boundary
             )
             rows_transformed = len(rows)
+            emit_event(
+                "TRANSFORM_COMPLETED",
+                run_id=run_id,
+                dataset=config.dataset,
+                stage="TRANSFORM",
+                rows_processed=rows_transformed,
+            )
             quality = evaluate_contracts(
                 config.contracts,
                 [name for name, _ in output_columns],
@@ -321,6 +371,14 @@ def run_pipeline(
             )
             rows_contract_passed = quality.rows_contract_passed
             rows_quarantined = quality.rows_quarantined
+            emit_event(
+                "QUALITY_COMPLETED",
+                run_id=run_id,
+                dataset=config.dataset,
+                stage="QUALITY",
+                rows_processed=rows_contract_passed,
+                rows_quarantined=rows_quarantined,
+            )
             store.record_quality_results(
                 run_id=run_id,
                 dataset=config.dataset,
@@ -343,9 +401,25 @@ def run_pipeline(
             rows_updated = load_metrics.rows_updated
             rows_expired = load_metrics.rows_expired
             rows_history_inserted = load_metrics.rows_history_inserted
+            emit_event(
+                "PUBLISH_COMPLETED",
+                run_id=run_id,
+                dataset=config.dataset,
+                stage="PUBLISH",
+                load_strategy=config.load_strategy,
+                rows_processed=rows_loaded,
+            )
             if config.watermark is not None and run_mode == "normal":
                 watermark_after = candidate_watermark or watermark_before
+                if watermark_after != watermark_before:
+                    emit_event(
+                        "WATERMARK_ADVANCED",
+                        run_id=run_id,
+                        dataset=config.dataset,
+                        stage="WATERMARK",
+                    )
         except Exception as exc:
+            safe_error = redact_text(exc)
             store.finish_run(
                 run_id=run_id,
                 status="FAILED",
@@ -366,7 +440,19 @@ def run_pipeline(
                 watermark_after=watermark_before,
                 rows_expired=rows_expired,
                 rows_history_inserted=rows_history_inserted,
-                error_message=str(exc)[:4000],
+                error_message=safe_error[:4000],
+            )
+            emit_event(
+                "RUN_FAILED",
+                level=logging.ERROR,
+                run_id=run_id,
+                dataset=config.dataset,
+                stage="RUN",
+                source_type=config.source_type,
+                load_strategy=config.load_strategy,
+                error_type=type(exc).__name__,
+                error=safe_error,
+                duration_seconds=time.perf_counter() - timer,
             )
             if isinstance(exc, ETLError):
                 raise
@@ -396,6 +482,16 @@ def run_pipeline(
             drift_status=drift_status,
             watermark_before=watermark_before,
             watermark_after=watermark_after,
+        )
+        emit_event(
+            "RUN_SUCCEEDED",
+            run_id=run_id,
+            dataset=config.dataset,
+            stage="RUN",
+            source_type=config.source_type,
+            load_strategy=config.load_strategy,
+            rows_processed=rows_loaded,
+            duration_seconds=duration,
         )
 
     return RunResult(

@@ -5,12 +5,12 @@
 
 **New dataset = new config, not new pipeline.**
 
-This repository contains Milestones 1–6: the vertical ETL slice, generic transformation engine,
+This repository contains Milestones 1–7: the vertical ETL slice, generic transformation engine,
 onboarding profiler, data-quality/quarantine layer, reliability controls, advanced SCD2 loading,
-and generic CSV/JSON/Parquet/PostgreSQL connectors. Approved configuration drives raw preservation,
-schema fingerprinting, explicit normalization, SQL transformations, quality evaluation,
-privacy-safe quarantine, transactional publishing, and operational metadata. There is no
-dataset-specific Python.
+generic CSV/JSON/Parquet/PostgreSQL connectors, and production-oriented orchestration. Approved
+configuration drives raw preservation, schema fingerprinting, explicit normalization, SQL
+transformations, quality evaluation, privacy-safe quarantine, transactional publishing, and
+operational metadata. Airflow schedules the same CLI; there is no dataset-specific Python or DAG.
 
 ## Runtime flow
 
@@ -32,7 +32,7 @@ customers.csv
   -> load a run-scoped PostgreSQL staging table
   -> atomically full-publish, append, merge, backfill, or maintain SCD2 history
   -> advance the watermark only after successful publish
-  -> record SUCCEEDED/FAILED metrics in the ledger
+  -> record SUCCEEDED/FAILED metrics in the ledger and structured execution logs
 ```
 
 The engine reads and transforms the preserved raw artifact rather than rereading a potentially
@@ -70,9 +70,14 @@ repository, the current commit SHA is recorded; otherwise the ledger uses `UNAVA
 - idempotent full reruns, successful incremental reruns, and business-key upserts
 - immutable-by-convention raw run directories and SHA-256 checksums
 - run status, counts, timing, config identity, and errors in `etl_meta.etl_run_ledger`
+- opt-in, config-discovered Airflow DAGs that validate and invoke the existing ETL CLI
+- JSON structured logs with run, dataset, stage, source, load, count, and duration context
+- pinned ETL/Airflow Docker images with PostgreSQL and service health checks
+- GitHub Actions checks for tests, lint, formatting, runnable configs, compilation, and PostgreSQL
 
-Not implemented yet: Airflow, Power BI, cloud services, Kafka/streaming, Spark, dbt, automatic
-schema migration, or automatic business-rule inference. Those belong to later milestones.
+Not implemented yet: Power BI, cloud services, alerting integrations, Kafka/streaming, Spark, dbt,
+Kubernetes, Terraform, automatic schema migration, or automatic business-rule inference. Those
+belong to later milestones.
 
 ## Dataset onboarding flow
 
@@ -146,8 +151,8 @@ required nested review, and approve the top-level config. Until then, both `etl 
 
 ## Quick start
 
-Requirements: Python 3.11+ and PostgreSQL. Docker Compose is optional but the easiest way to start
-the included local database.
+Requirements: Python 3.11+ and PostgreSQL. Docker Compose is optional for CLI development and is the
+supported way to run the complete local PostgreSQL/Airflow stack.
 
 ```bash
 python -m venv .venv
@@ -157,7 +162,6 @@ Activate the environment, then install the project:
 
 ```bash
 python -m pip install -e ".[dev]"
-docker compose up -d postgres
 ```
 
 Set the destination connection. PowerShell:
@@ -193,6 +197,17 @@ SELECT *
 FROM etl_meta.etl_run_ledger
 ORDER BY started_at DESC;
 ```
+
+Validate every committed top-level runnable config with:
+
+```bash
+etl validate-all configs
+```
+
+PostgreSQL source configs receive static validation when their source credential environment
+variable is unavailable. Use `--require-source-bindings` when every configured source must also be
+connected and bound. Draft profiler output belongs under `configs/drafts/`; that directory is not
+scanned by `validate-all` or Airflow discovery.
 
 ## Configuration contract
 
@@ -500,6 +515,111 @@ only that trusted interval, so repeating the same window is idempotent. It does 
 or advance the normal production watermark. The ledger records `run_mode`, `backfill_from`, and
 `backfill_to` along with source type and SCD2 row metrics.
 
+## Production architecture
+
+```text
+new dataset
+  -> profile
+  -> human-approved config in Git
+  -> CI validation
+  -> Airflow scheduler discovers enabled config
+  -> validate_config task
+  -> run_etl task invokes the generic ETL CLI
+  -> extract / raw / drift / normalize / transform
+  -> contracts / quarantine / configured load strategy
+  -> atomic publish
+  -> PostgreSQL ledger + structured logs
+```
+
+**Airflow = orchestration. ETL framework = data processing.** Airflow owns schedules, dependencies,
+task status, and retries. Extraction, normalization, transformations, contracts, quarantine,
+schema drift, watermarks, full/incremental/upsert/SCD2 behavior, and publishing remain in
+`metadata_etl`. **The same `etl run <config>` execution path is used locally and by Airflow.**
+
+The single DAG factory in `airflow/dags/generic_etl.py` scans approved top-level YAML files. It
+creates a `validate_config -> run_etl` DAG for each explicitly enabled config. The execution task
+uses the configured retry count and delay; it does not maintain separate retry or watermark state.
+A non-zero CLI exit fails the Airflow task, and the existing atomicity/idempotency behavior makes a
+retry safe.
+
+Scheduling metadata is optional, so local CLI behavior does not change:
+
+```yaml
+orchestration:
+  enabled: true
+  schedule: "0 2 * * *"
+  retries: 2
+  retry_delay_minutes: 5
+```
+
+Only `enabled: true`, valid, approved configs become DAGs. Adding another scheduled dataset means
+adding and approving one YAML file; no DAG Python is added or changed.
+
+## Dockerized local stack
+
+The pinned local stack uses Python 3.12, PostgreSQL 17.6, and Apache Airflow 3.1.7 with
+LocalExecutor. It contains PostgreSQL, an optional CLI container, Airflow initialization, scheduler,
+DAG processor, and API server. PostgreSQL and Airflow services have dependency/readiness checks.
+
+Copy `.env.example` to `.env`, replace every placeholder, and keep `.env` uncommitted. Generate a
+Fernet key and JWT secret with standard Python if needed:
+
+```bash
+python -c "import base64,secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())"
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+git rev-parse HEAD
+```
+
+Put those values in `AIRFLOW_FERNET_KEY`, `AIRFLOW_JWT_SECRET`, and `ETL_GIT_COMMIT_SHA`. Use a
+URL-safe local database password because it is interpolated into connection URLs. Then start the
+stack:
+
+```bash
+docker compose build
+docker compose up airflow-init
+docker compose up -d postgres airflow-api-server airflow-scheduler airflow-dag-processor
+docker compose ps
+```
+
+Airflow is available at `http://localhost:8080`. Its development Simple Auth Manager password is
+generated in the Git-ignored `airflow/config` directory. Configs are mounted read-only, while raw
+data and Airflow logs use host-mounted, Git-ignored runtime directories. Manual containerized CLI
+usage remains available through the tools profile:
+
+```bash
+docker compose --profile tools run --rm etl validate configs/customers.yaml
+docker compose --profile tools run --rm etl run configs/customers.yaml
+```
+
+For an orchestration smoke test, list or manually test the two unrelated generated DAGs:
+
+```bash
+docker compose exec airflow-scheduler airflow dags list
+docker compose exec airflow-scheduler airflow dags test etl_customers 2026-09-07
+docker compose exec airflow-scheduler airflow dags test etl_sensor_readings 2026-09-07
+```
+
+## Structured logging and failures
+
+CLI execution emits machine-readable JSON to stderr and keeps command results on stdout. Events
+include `CONFIG_VALIDATED`, `RUN_STARTED`, `SOURCE_EXTRACTED`, `RAW_PRESERVED`, `SCHEMA_CHECKED`,
+`TRANSFORM_COMPLETED`, `QUALITY_COMPLETED`, `PUBLISH_COMPLETED`, `WATERMARK_ADVANCED`,
+`RUN_SUCCEEDED`, and `RUN_FAILED`. Context includes timestamp, level, run ID, dataset, stage, source
+type, load strategy, row counts, and duration where meaningful. Set `ETL_LOG_FORMAT=text` for a
+compact human-readable local format.
+
+Logs never replace the PostgreSQL ledger: logs provide execution detail, while the ledger remains
+the durable operational record. Credential-like fields, configured secrets, and credentials inside
+URLs are redacted before logging or failure persistence. Expected ETL failures retain meaningful
+exception categories and return CLI exit code 2; unexpected safe-boundary failures return code 3.
+
+## Continuous integration
+
+`.github/workflows/ci.yml` runs on pull requests and pushes to `main` using Python 3.12 and a pinned
+PostgreSQL service container. It installs the project, runs the complete unit/integration suite,
+Ruff lint and formatting checks, validates every top-level runnable config, and compiles application
+and DAG Python. CI uses isolated test credentials only and does not require production secrets.
+
 ## Atomicity and reruns
 
 Every run gets a unique staging table. Staging creation, row copy, trusted-table mutation, staging
@@ -522,8 +642,9 @@ runtime blocking before review, contract validation/evaluation, privacy handling
 persistence, schema hash determinism, drift detection/policies/history, incremental first/later/no-
 data runs, failure-safe watermarks and retries, business-key upserts, SCD2 history and rollback,
 bounded backfills, flat/nested/NDJSON normalization, Parquet schemas, PostgreSQL source snapshots,
-full rerun idempotency, trusted-row exclusion, and row-count accounting. A live PostgreSQL instance
-is needed for the end-to-end CLI verification, but not for these unit tests.
+full rerun idempotency, trusted-row exclusion, orchestration discovery, CLI status propagation,
+structured-log redaction, and row-count accounting. The PostgreSQL integration test is enabled by
+`ETL_TEST_POSTGRES_DSN` and otherwise skips locally.
 
 ## Repository map
 
@@ -538,6 +659,7 @@ configs/scd2_regions_*.yaml         two-run SCD2 history demo
 configs/nested_orders.yaml          configured nested JSON explosion
 configs/parquet_weather.yaml        Parquet source demo
 configs/postgres_assets.yaml        table-based PostgreSQL source demo
+configs/drafts/                     unapproved profiler drafts; excluded from scheduling
 data/incoming/customers.csv         example input
 data/incoming/sensor_readings.csv   second example input
 data/incoming/students.csv          profiling/onboarding example
@@ -552,13 +674,20 @@ src/metadata_etl/onboarding/        profiler and starter YAML generator
 src/metadata_etl/quality/           contract registry, evaluation, and privacy handling
 src/metadata_etl/schema/            deterministic fingerprints and drift comparison
 src/metadata_etl/connectors/        generic source connector registry
+src/metadata_etl/orchestration.py   config discovery, validate-all, and CLI task execution
+src/metadata_etl/structured_logging.py structured JSON/text logs and redaction
 src/metadata_etl/config.py          parsing and validation
 src/metadata_etl/sql_compiler.py    generic SQL compilation
 src/metadata_etl/transformations/   registry and reusable operators
 src/metadata_etl/source.py          raw preservation
 src/metadata_etl/postgres.py        ledger, drift/watermarks, and atomic load strategies
 src/metadata_etl/pipeline.py        dataset-agnostic execution sequence
-src/metadata_etl/cli.py             etl validate / etl run
+src/metadata_etl/cli.py             profile / validate / validate-all / run commands
+airflow/dags/generic_etl.py         one config-discovered DAG factory
+Dockerfile                          pinned lightweight ETL CLI image
+Dockerfile.airflow                  pinned Airflow image extended with the ETL package
+docker-compose.yml                  local PostgreSQL and Airflow runtime
+.github/workflows/ci.yml            pull-request and main-branch quality gate
 sql/metadata_tables.sql             ledger DDL reference
 tests/                              unit tests
 ```
