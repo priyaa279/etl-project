@@ -10,13 +10,16 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
   "duckdb>=1.1,<2",
+  "fastapi>=0.115,<1",
   "psycopg[binary]>=3.2,<4",
   "PyYAML>=6.0,<7",
+  "uvicorn[standard]>=0.34,<1",
 ]
 
 [project.optional-dependencies]
 dev = [
   "pytest>=8.3,<9",
+  "httpx>=0.28,<1",
   "ruff>=0.9,<1",
 ]
 
@@ -24,7 +27,7 @@ dev = [
 etl = "metadata_etl.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/metadata_etl"]
+packages = ["src/metadata_etl", "src/metadata_etl_api"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -33,4 +36,3 @@ addopts = "-q"
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-

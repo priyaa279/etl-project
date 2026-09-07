@@ -66,6 +66,49 @@ services:
       postgres:
         condition: service_healthy
 
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    environment:
+      ETL_POSTGRES_DSN: postgresql://${ETL_DB_USER:-etl}:${ETL_DB_PASSWORD}@postgres:5432/${ETL_DB_NAME:-etl}
+      ETL_API_CORS_ORIGINS: ${ETL_API_CORS_ORIGINS:-http://localhost:5173,http://localhost:4173}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=3)",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: ""
+    ports:
+      - "4173:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1/"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
   airflow-init:
     <<: *airflow-common
     command: ["airflow", "db", "migrate"]

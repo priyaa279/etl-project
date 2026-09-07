@@ -33,6 +33,39 @@ etl status
 Local commands invoke the framework directly. Airflow is optional orchestration around those same
 commands; its separate setup and smoke-test instructions appear below.
 
+## Application UI
+
+Milestone 10A adds a read-only operational application without changing ETL processing:
+
+```text
+React + TypeScript frontend
+          ↓
+FastAPI application API
+          ↓
+PostgreSQL etl_observability views
+          ↓
+Existing ETL metadata
+```
+
+The **ETL Control Center** includes Overview, Datasets, Runs, Data Quality, Schema Drift, and
+Watermarks pages, plus dataset and run detail views. The browser cannot connect to PostgreSQL,
+execute the ETL CLI, invoke Airflow, read YAML, or access row-level quarantine values.
+
+Start the integrated application using the root `.env` configuration:
+
+```powershell
+docker compose up -d --build
+```
+
+- Frontend: `http://localhost:4173`
+- Read-only API: `http://localhost:8000`
+- API health: `http://localhost:8000/api/health`
+- Airflow: `http://localhost:8080`
+
+For separate frontend/API development commands, endpoint details, privacy boundaries, and the
+future 10B/10C architecture, see
+[frontend architecture](docs/frontend_architecture.md).
+
 ## Portfolio proof
 
 | Domain | Source | Generic processing | Quality | Load |
@@ -118,6 +151,7 @@ repository, the current commit SHA is recorded; otherwise the ledger uses `UNAVA
 - GitHub Actions checks for tests, lint, formatting, runnable configs, compilation, and PostgreSQL
 - an `etl_observability` PostgreSQL schema with health, trend, quality, drift, and watermark views
 - read-only `etl status` and `etl runs` operational monitoring commands
+- a React/TypeScript ETL Control Center backed by a read-only FastAPI application boundary
 - three unrelated portfolio datasets executed through one dataset-agnostic engine
 - a rerunnable CLI-driven demonstration covering quality, drift, and load idempotency evidence
 - architecture, dataset-independence, and interview walkthrough documentation
@@ -842,6 +876,10 @@ scripts/run_portfolio_demo.py       rerunnable public-CLI demonstration
 docs/dataset_independence.md        three-domain proof matrix and evidence
 docs/architecture.md                system flow, responsibilities, and principles
 docs/portfolio_talking_points.md    concise interview walkthrough
+docs/frontend_architecture.md       read-only UI/API boundary and future extension points
+frontend/                           React, TypeScript, Vite, and Tailwind control center
+src/metadata_etl_api/               FastAPI routes, models, settings, and read repository
+Dockerfile.api                      pinned FastAPI runtime image
 src/metadata_etl/onboarding/        profiler and starter YAML generator
 src/metadata_etl/quality/           contract registry, evaluation, and privacy handling
 src/metadata_etl/schema/            deterministic fingerprints and drift comparison
