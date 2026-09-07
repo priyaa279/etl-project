@@ -36,8 +36,9 @@ def test_full_publish_and_ledger_against_postgres(
     with psycopg.connect(dsn) as connection:
         trusted = connection.execute("SELECT count(*) FROM public.ci_customers").fetchone()
         ledger = connection.execute(
-            "SELECT status, rows_loaded FROM etl_meta.etl_run_ledger WHERE run_id = %s",
+            "SELECT status, rows_loaded, load_strategy "
+            "FROM etl_meta.etl_run_ledger WHERE run_id = %s",
             (result.run_id,),
         ).fetchone()
     assert trusted == (3,)
-    assert ledger == ("SUCCEEDED", 3)
+    assert ledger == ("SUCCEEDED", 3, "full")

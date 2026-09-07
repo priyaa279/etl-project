@@ -5,12 +5,13 @@
 
 **New dataset = new config, not new pipeline.**
 
-This repository contains Milestones 1–7: the vertical ETL slice, generic transformation engine,
+This repository contains Milestones 1–8: the vertical ETL slice, generic transformation engine,
 onboarding profiler, data-quality/quarantine layer, reliability controls, advanced SCD2 loading,
-generic CSV/JSON/Parquet/PostgreSQL connectors, and production-oriented orchestration. Approved
-configuration drives raw preservation, schema fingerprinting, explicit normalization, SQL
-transformations, quality evaluation, privacy-safe quarantine, transactional publishing, and
-operational metadata. Airflow schedules the same CLI; there is no dataset-specific Python or DAG.
+generic CSV/JSON/Parquet/PostgreSQL connectors, production-oriented orchestration, and backend
+observability. Approved configuration drives raw preservation, schema fingerprinting, explicit
+normalization, SQL transformations, quality evaluation, privacy-safe quarantine, transactional
+publishing, and operational metadata. Airflow schedules the same CLI, while PostgreSQL views and
+read-only CLI commands summarize health; there is no dataset-specific Python, DAG, or monitoring.
 
 ## Runtime flow
 
@@ -74,10 +75,12 @@ repository, the current commit SHA is recorded; otherwise the ledger uses `UNAVA
 - JSON structured logs with run, dataset, stage, source, load, count, and duration context
 - pinned ETL/Airflow Docker images with PostgreSQL and service health checks
 - GitHub Actions checks for tests, lint, formatting, runnable configs, compilation, and PostgreSQL
+- an `etl_observability` PostgreSQL schema with health, trend, quality, drift, and watermark views
+- read-only `etl status` and `etl runs` operational monitoring commands
 
-Not implemented yet: Power BI, cloud services, alerting integrations, Kafka/streaming, Spark, dbt,
-Kubernetes, Terraform, automatic schema migration, or automatic business-rule inference. Those
-belong to later milestones.
+Not implemented yet: Power BI dashboards, cloud services, alerting integrations, Kafka/streaming,
+Spark, dbt, Kubernetes, Terraform, automatic schema migration, or automatic business-rule
+inference. Those belong to later milestones.
 
 ## Dataset onboarding flow
 
@@ -529,6 +532,12 @@ new dataset
   -> contracts / quarantine / configured load strategy
   -> atomic publish
   -> PostgreSQL ledger + structured logs
+
+parallel monitoring path:
+ETL framework
+  -> run ledger / quality / quarantine / drift / watermark metadata
+  -> etl_observability SQL views
+  -> etl status / etl runs
 ```
 
 **Airflow = orchestration. ETL framework = data processing.** Airflow owns schedules, dependencies,
@@ -620,6 +629,109 @@ PostgreSQL service container. It installs the project, runs the complete unit/in
 Ruff lint and formatting checks, validates every top-level runnable config, and compiles application
 and DAG Python. CI uses isolated test credentials only and does not require production secrets.
 
+## Backend observability
+
+The observability layer summarizes the durable metadata already produced by ETL runs. It does not
+control execution, parse log files, or copy business data:
+
+```text
+ETL framework
+  -> etl_meta operational tables
+  -> etl_observability SQL views
+  -> read-only monitoring CLI
+```
+
+`PostgresStore.ensure_metadata_tables()` installs or refreshes the views during normal metadata
+setup. Existing databases can be upgraded idempotently without deleting history:
+
+```bash
+etl observability-install
+```
+
+The PostgreSQL objects and their grains are:
+
+| Object | Grain |
+|---|---|
+| `etl_meta.etl_run_ledger` | one row per ETL run |
+| `etl_meta.data_quality_results` | one row per run and quality rule |
+| `etl_meta.etl_quarantine` | one row per quarantined rule failure/detail |
+| `etl_meta.schema_drift_history` | one row per schema-drift event |
+| `etl_meta.etl_watermarks` | current watermark state per dataset |
+| `etl_observability.pipeline_runs` | one row per ETL run |
+| `etl_observability.dataset_health` | one row per dataset represented in metadata |
+| `etl_observability.daily_pipeline_summary` | one row per run date and dataset |
+| `etl_observability.quality_summary` | one row per run and quality rule |
+| `etl_observability.quality_daily_trend` | one row per date, dataset, rule, and rule type |
+| `etl_observability.quarantine_summary` | one aggregate row per date, dataset, rule, and rule type |
+| `etl_observability.schema_drift_summary` | one row per schema-drift event |
+| `etl_observability.watermark_status` | current watermark state per dataset |
+
+### Health semantics
+
+Run status and health status remain separate. `dataset_health` deterministically assigns:
+
+- `FAILED` when the latest run failed.
+- `WARNING` when the latest run succeeded but quarantined rows or `WARN` schema drift exist.
+- `HEALTHY` when the latest run succeeded without those warning conditions.
+- `UNKNOWN` when metadata identifies a dataset but no run exists, or the latest run is neither a
+  completed success nor failure.
+
+Quarantine is therefore a warning, not a pipeline failure. The view also exposes the latest run,
+latest watermark, last successful timestamp, hours since success, and consecutive failures. No
+dataset-specific thresholds or business assumptions are embedded in this logic.
+
+### Monitoring CLI
+
+Monitoring commands require `ETL_POSTGRES_DSN` and query the SQL views directly:
+
+```bash
+etl status
+etl status --dataset customers
+etl runs --limit 10
+etl runs --dataset customers --limit 10
+```
+
+`etl status` provides compact current health across datasets. Dataset-specific status adds the
+latest run ID/time, duration, row counts, drift, watermark, last success, and failure streak.
+`etl runs` lists newest runs first. These commands perform only parameterized `SELECT` queries;
+they cannot trigger ETL, change watermarks, retry runs, or modify load state.
+
+### Performance, indexes, and privacy
+
+`pipeline_runs` exposes per-run row counts, duration, and `rows_loaded_per_second`. Throughput is
+`NULL` when duration is zero. The daily summary supplies success/failure counts, success rate, row
+totals, average duration, and maximum duration. Airflow retry counts are not written to ETL
+metadata, so retry analytics are intentionally unavailable.
+
+Indexes are limited to observed monitoring access paths:
+
+- `etl_run_ledger(dataset, started_at DESC)` supports latest-run and per-dataset trends.
+- `etl_run_ledger(started_at DESC)` supports global recent-run queries.
+- `data_quality_results(dataset, timestamp DESC)` supports quality trends.
+- `etl_quarantine(dataset, quarantined_at DESC, rule_id)` supports quarantine aggregation.
+- `schema_drift_history(dataset, detected_at DESC)` supports drift history.
+
+Primary keys already cover run IDs and current watermark lookup, so no duplicate indexes are added.
+
+`quarantine_summary` contains only aggregate failure and affected-record counts. It never exposes
+failed values, masked values, hashes, record identifiers, failure reasons, source records, or
+quarantine detail columns. No observability view includes credentials or environment secrets.
+
+Example direct queries:
+
+```sql
+SELECT * FROM etl_observability.dataset_health ORDER BY dataset;
+SELECT * FROM etl_observability.pipeline_runs ORDER BY started_at DESC LIMIT 10;
+SELECT * FROM etl_observability.daily_pipeline_summary ORDER BY run_date DESC, dataset;
+SELECT * FROM etl_observability.quality_summary WHERE records_failed > 0;
+SELECT * FROM etl_observability.quarantine_summary ORDER BY date DESC, dataset;
+SELECT * FROM etl_observability.schema_drift_summary ORDER BY detected_at DESC;
+SELECT * FROM etl_observability.watermark_status ORDER BY dataset;
+```
+
+Durable metadata, structured logs, and observability have distinct roles: metadata stores
+operational facts, logs support execution debugging, and views provide a stable monitoring model.
+
 ## Atomicity and reruns
 
 Every run gets a unique staging table. Staging creation, row copy, trusted-table mutation, staging
@@ -643,8 +755,9 @@ persistence, schema hash determinism, drift detection/policies/history, incremen
 data runs, failure-safe watermarks and retries, business-key upserts, SCD2 history and rollback,
 bounded backfills, flat/nested/NDJSON normalization, Parquet schemas, PostgreSQL source snapshots,
 full rerun idempotency, trusted-row exclusion, orchestration discovery, CLI status propagation,
-structured-log redaction, and row-count accounting. The PostgreSQL integration test is enabled by
-`ETL_TEST_POSTGRES_DSN` and otherwise skips locally.
+structured-log redaction, observability installation, health derivation, safe rates, privacy-safe
+aggregates, monitoring CLI behavior, and row-count accounting. PostgreSQL integration tests are
+enabled by `ETL_TEST_POSTGRES_DSN` and otherwise skip locally.
 
 ## Repository map
 
@@ -676,13 +789,15 @@ src/metadata_etl/schema/            deterministic fingerprints and drift compari
 src/metadata_etl/connectors/        generic source connector registry
 src/metadata_etl/orchestration.py   config discovery, validate-all, and CLI task execution
 src/metadata_etl/structured_logging.py structured JSON/text logs and redaction
+src/metadata_etl/observability.py   observability installation and read-only queries
+src/metadata_etl/sql/observability.sql PostgreSQL monitoring schema, views, and indexes
 src/metadata_etl/config.py          parsing and validation
 src/metadata_etl/sql_compiler.py    generic SQL compilation
 src/metadata_etl/transformations/   registry and reusable operators
 src/metadata_etl/source.py          raw preservation
 src/metadata_etl/postgres.py        ledger, drift/watermarks, and atomic load strategies
 src/metadata_etl/pipeline.py        dataset-agnostic execution sequence
-src/metadata_etl/cli.py             profile / validate / validate-all / run commands
+src/metadata_etl/cli.py             processing, validation, and monitoring commands
 airflow/dags/generic_etl.py         one config-discovered DAG factory
 Dockerfile                          pinned lightweight ETL CLI image
 Dockerfile.airflow                  pinned Airflow image extended with the ETL package

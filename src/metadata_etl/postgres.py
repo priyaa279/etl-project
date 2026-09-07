@@ -11,6 +11,7 @@ from psycopg import sql
 
 from metadata_etl.config import SCD2Config
 from metadata_etl.errors import LoadError
+from metadata_etl.observability import install_observability
 
 
 @dataclass(frozen=True)
@@ -101,6 +102,7 @@ class PostgresStore:
                     watermark_before TEXT,
                     watermark_after TEXT,
                     source_type TEXT,
+                    load_strategy TEXT,
                     run_mode TEXT,
                     backfill_from TEXT,
                     backfill_to TEXT,
@@ -130,6 +132,7 @@ class PostgresStore:
                 "watermark_before TEXT",
                 "watermark_after TEXT",
                 "source_type TEXT",
+                "load_strategy TEXT",
                 "run_mode TEXT",
                 "backfill_from TEXT",
                 "backfill_to TEXT",
@@ -198,6 +201,7 @@ class PostgresStore:
                 )
                 """
             )
+            install_observability(self.conn)
 
     def start_run(
         self,
@@ -209,6 +213,7 @@ class PostgresStore:
         git_sha: str,
         started_at: datetime,
         source_type: str = "csv",
+        load_strategy: str | None = None,
         run_mode: str = "normal",
         backfill_from: str | None = None,
         backfill_to: str | None = None,
@@ -218,9 +223,9 @@ class PostgresStore:
                 """
                 INSERT INTO etl_meta.etl_run_ledger (
                     run_id, dataset, config_schema_version, config_hash,
-                    git_commit_sha, status, started_at, source_type, run_mode,
-                    backfill_from, backfill_to
-                ) VALUES (%s, %s, %s, %s, %s, 'RUNNING', %s, %s, %s, %s, %s)
+                    git_commit_sha, status, started_at, source_type, load_strategy,
+                    run_mode, backfill_from, backfill_to
+                ) VALUES (%s, %s, %s, %s, %s, 'RUNNING', %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     run_id,
@@ -230,6 +235,7 @@ class PostgresStore:
                     git_sha,
                     started_at,
                     source_type,
+                    load_strategy,
                     run_mode,
                     backfill_from,
                     backfill_to,

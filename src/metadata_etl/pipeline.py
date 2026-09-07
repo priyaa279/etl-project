@@ -263,6 +263,7 @@ def run_pipeline(
             git_sha=git_sha,
             started_at=started_at,
             source_type=config.source_type,
+            load_strategy=config.load_strategy,
             run_mode=run_mode,
             backfill_from=backfill_from,
             backfill_to=backfill_to,

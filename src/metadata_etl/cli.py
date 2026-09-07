@@ -3,12 +3,46 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 from metadata_etl.config import load_config
 from metadata_etl.errors import ETLError
 from metadata_etl.sql_compiler import compile_transform_sql
 from metadata_etl.structured_logging import configure_logging, emit_event, redact_text
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
+def _display(value: Any) -> str:
+    if value is None:
+        return "-"
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    if isinstance(value, float):
+        return f"{value:.2f}"
+    if isinstance(value, Decimal):
+        return f"{value:.2f}"
+    return str(value)
+
+
+def _print_table(headers: tuple[str, ...], rows: list[tuple[Any, ...]]) -> None:
+    rendered = [[_display(value) for value in row] for row in rows]
+    widths = [
+        max(len(header), *(len(row[index]) for row in rendered)) if rendered else len(header)
+        for index, header in enumerate(headers)
+    ]
+    print("  ".join(header.ljust(widths[index]) for index, header in enumerate(headers)))
+    print("  ".join("-" * width for width in widths))
+    for row in rendered:
+        print("  ".join(value.ljust(widths[index]) for index, value in enumerate(row)))
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -45,6 +79,18 @@ def _parser() -> argparse.ArgumentParser:
     profile.add_argument("--force", action="store_true", help="Replace an existing output file")
 
     subparsers.add_parser("operators", help="List registered transformation operators")
+
+    status = subparsers.add_parser("status", help="Show current dataset health")
+    status.add_argument("--dataset", help="Show detailed health for one dataset")
+
+    runs = subparsers.add_parser("runs", help="Show recent ETL runs")
+    runs.add_argument("--dataset", help="Restrict recent runs to one dataset")
+    runs.add_argument("--limit", type=_positive_int, default=10)
+
+    subparsers.add_parser(
+        "observability-install",
+        help="Install or refresh the PostgreSQL observability schema and views",
+    )
     return parser
 
 
@@ -71,6 +117,92 @@ def main(argv: list[str] | None = None) -> int:
 
             print(json.dumps({"operators": default_registry().names}, indent=2))
             return 0
+
+        if args.command in {"status", "runs", "observability-install"}:
+            from metadata_etl.observability import MonitoringStore, monitoring_dsn
+
+            dsn = monitoring_dsn()
+            if args.command == "observability-install":
+                from metadata_etl.postgres import PostgresStore
+
+                with PostgresStore(dsn) as store:
+                    store.ensure_metadata_tables()
+                print("Observability schema and views installed.")
+                return 0
+            with MonitoringStore(dsn) as monitoring:
+                if args.command == "status":
+                    health = monitoring.status(args.dataset)
+                    if args.dataset:
+                        item = health[0]
+                        fields = (
+                            ("dataset", item["dataset"]),
+                            ("health", item["health_status"]),
+                            ("latest_run_id", item["latest_run_id"]),
+                            ("latest_status", item["latest_run_status"]),
+                            ("latest_run_time", item["latest_run_time"]),
+                            ("duration_seconds", item["latest_duration_seconds"]),
+                            ("rows_extracted", item["latest_rows_extracted"]),
+                            ("rows_loaded", item["latest_rows_loaded"]),
+                            ("rows_quarantined", item["latest_rows_quarantined"]),
+                            ("drift_status", item["latest_drift_status"]),
+                            ("latest_watermark", item["latest_watermark"]),
+                            ("last_successful_run", item["last_successful_run"]),
+                            ("consecutive_failures", item["consecutive_failure_count"]),
+                            ("hours_since_success", item["hours_since_last_success"]),
+                        )
+                        _print_table(("field", "value"), list(fields))
+                    else:
+                        _print_table(
+                            (
+                                "dataset",
+                                "health",
+                                "latest_status",
+                                "loaded",
+                                "quarantined",
+                                "drift",
+                            ),
+                            [
+                                (
+                                    item["dataset"],
+                                    item["health_status"],
+                                    item["latest_run_status"],
+                                    item["latest_rows_loaded"],
+                                    item["latest_rows_quarantined"],
+                                    item["latest_drift_status"],
+                                )
+                                for item in health
+                            ],
+                        )
+                    return 0
+                recent = monitoring.runs(dataset=args.dataset, limit=args.limit)
+                _print_table(
+                    (
+                        "run_id",
+                        "dataset",
+                        "status",
+                        "started_at",
+                        "duration",
+                        "loaded",
+                        "quarantined",
+                        "strategy",
+                        "mode",
+                    ),
+                    [
+                        (
+                            item["run_id"],
+                            item["dataset"],
+                            item["status"],
+                            item["started_at"],
+                            item["duration_seconds"],
+                            item["rows_loaded"],
+                            item["rows_quarantined"],
+                            item["load_strategy"],
+                            item["run_mode"],
+                        )
+                        for item in recent
+                    ],
+                )
+                return 0
 
         if args.command == "validate":
             config = load_config(args.config)

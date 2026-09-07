@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS etl_meta.etl_run_ledger (
     watermark_before TEXT,
     watermark_after TEXT,
     source_type TEXT,
+    load_strategy TEXT,
     run_mode TEXT,
     backfill_from TEXT,
     backfill_to TEXT,
@@ -51,6 +52,7 @@ ALTER TABLE etl_meta.etl_run_ledger ADD COLUMN IF NOT EXISTS drift_status TEXT;
 ALTER TABLE etl_meta.etl_run_ledger ADD COLUMN IF NOT EXISTS watermark_before TEXT;
 ALTER TABLE etl_meta.etl_run_ledger ADD COLUMN IF NOT EXISTS watermark_after TEXT;
 ALTER TABLE etl_meta.etl_run_ledger ADD COLUMN IF NOT EXISTS source_type TEXT;
+ALTER TABLE etl_meta.etl_run_ledger ADD COLUMN IF NOT EXISTS load_strategy TEXT;
 ALTER TABLE etl_meta.etl_run_ledger ADD COLUMN IF NOT EXISTS run_mode TEXT;
 ALTER TABLE etl_meta.etl_run_ledger ADD COLUMN IF NOT EXISTS backfill_from TEXT;
 ALTER TABLE etl_meta.etl_run_ledger ADD COLUMN IF NOT EXISTS backfill_to TEXT;

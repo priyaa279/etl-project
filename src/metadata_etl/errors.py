@@ -20,3 +20,7 @@ class LoadError(ETLError):
 
 class SchemaDriftError(ETLError):
     """Raised when detected schema drift violates the approved policy."""
+
+
+class ObservabilityError(ETLError):
+    """Raised when operational metadata cannot be queried safely."""
