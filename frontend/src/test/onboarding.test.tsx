@@ -5,9 +5,11 @@ import { afterEach, expect, it, vi } from "vitest";
 import { api } from "../api/client";
 import { AppShell } from "../layouts/AppShell";
 import { OnboardingNewPage, OnboardingSessionPage } from "../pages/OnboardingPage";
+import { ConfigurationBuilderPage } from "../pages/ConfigurationBuilderPage";
 import { ReviewCenterPage } from "../pages/ReviewCenterPage";
 import type {
   OnboardingCapability,
+  OnboardingConfiguration,
   OnboardingReview,
   OnboardingSession,
 } from "../types/api";
@@ -111,6 +113,31 @@ const review: OnboardingReview = {
       editable: true,
     },
   ],
+};
+
+const configuration: OnboardingConfiguration = {
+  onboarding_id: "onboarding-123",
+  dataset: "course_enrollments",
+  source_type: "csv",
+  status: "CONFIGURING",
+  review_complete: true,
+  normalization_complete: true,
+  columns: [
+    { name: "student_id", source: "Student ID", datatype: "string", nullable: false, format: null, classification: null, quarantine_value: "none" },
+    { name: "enrolled_on", source: "Enrolled On", datatype: "date", nullable: false, format: "%Y-%m-%d", classification: null, quarantine_value: "none" },
+  ],
+  post_transformation_columns: [
+    { name: "student_id", datatype: "string" },
+    { name: "enrolled_on", datatype: "date" },
+  ],
+  accepted_key_candidates: ["student_id"],
+  normalization: null,
+  transformations: [],
+  contracts: [],
+  load: { strategy: "full", connection_env: "ETL_POSTGRES_DSN", schema: "public", staging_table: "course_enrollments_staging", target_table: "course_enrollments" },
+  schema_drift: { added_columns: "warn", removed_columns: "fail", datatype_change: "fail", canonical_change: "fail", raw_structure_change: "warn" },
+  validation: { result: "NOT_VALIDATED", draft_hash: "a".repeat(64), validated_hash: null, validated_at: null, errors: [] },
+  final_approved: false,
 };
 
 afterEach(() => vi.restoreAllMocks());
@@ -255,4 +282,83 @@ it("loads the actual read-only YAML and supports direct refresh into review", as
   expect(await screen.findByText(/approved: false/)).toBeInTheDocument();
   expect(yaml).toHaveBeenCalledWith("onboarding-123");
   expect(screen.queryByRole("textbox", { name: /YAML/ })).not.toBeInTheDocument();
+});
+
+it("adds, edits, removes, and reorders existing transformation operators", async () => {
+  const user = userEvent.setup();
+  const existing = {
+    ...configuration,
+    transformations: [
+      { id: "T001", type: "filter", condition: "student_id IS NOT NULL" },
+      { id: "T002", type: "cast", column: "student_id", datatype: "string" },
+    ],
+  };
+  vi.spyOn(api, "onboardingConfiguration").mockResolvedValue(existing);
+  const add = vi.spyOn(api, "addOnboardingTransformation").mockResolvedValue(existing);
+  const edit = vi.spyOn(api, "updateOnboardingTransformation").mockResolvedValue(existing);
+  const remove = vi.spyOn(api, "deleteOnboardingTransformation").mockResolvedValue(existing);
+  const move = vi.spyOn(api, "moveOnboardingTransformation").mockResolvedValue(existing);
+  renderRoute(<ConfigurationBuilderPage />, "/onboarding/onboarding-123/configure", "/onboarding/:onboardingId/configure");
+
+  expect(await screen.findByRole("heading", { name: "Transformations" })).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Move T002 up" }));
+  expect(move).toHaveBeenCalledWith("onboarding-123", "T002", "up");
+  await user.click(screen.getAllByRole("button", { name: "Edit" })[0]);
+  await user.clear(screen.getByLabelText("SQL condition"));
+  await user.type(screen.getByLabelText("SQL condition"), "student_id <> ''");
+  await user.click(screen.getByRole("button", { name: "Save transformation" }));
+  expect(edit).toHaveBeenCalledWith("onboarding-123", "T001", expect.objectContaining({ type: "filter" }));
+  await user.click(screen.getAllByRole("button", { name: "Remove" })[0]);
+  await user.click(screen.getByRole("button", { name: "Confirm remove" }));
+  expect(remove).toHaveBeenCalledWith("onboarding-123", "T001");
+  await user.selectOptions(screen.getByLabelText("Operator"), "derive");
+  await user.type(screen.getByLabelText("Target column"), "student_label");
+  await user.type(screen.getByLabelText("SQL expression"), "student_id");
+  await user.click(screen.getByRole("button", { name: "Add transformation" }));
+  expect(add).toHaveBeenCalledWith("onboarding-123", expect.objectContaining({ type: "derive", target_column: "student_label" }));
+});
+
+it("shows load-specific fields without silently applying accepted key suggestions", async () => {
+  const user = userEvent.setup();
+  vi.spyOn(api, "onboardingConfiguration").mockResolvedValue(configuration);
+  const update = vi.spyOn(api, "updateOnboardingLoad").mockResolvedValue(configuration);
+  renderRoute(<ConfigurationBuilderPage />, "/onboarding/onboarding-123/configure", "/onboarding/:onboardingId/configure");
+
+  await screen.findByRole("heading", { name: "Load Strategy" });
+  expect(screen.getByText(/Accepted profiler suggestions: student_id/)).toBeInTheDocument();
+  await user.selectOptions(screen.getByLabelText("Strategy"), "upsert");
+  expect(screen.getByLabelText("Business keys")).toHaveValue("");
+  await user.type(screen.getByLabelText("Business keys"), "student_id");
+  await user.click(screen.getByRole("button", { name: "Save load strategy" }));
+  expect(update).toHaveBeenCalledWith("onboarding-123", { strategy: "upsert", keys: ["student_id"] });
+});
+
+it("shows actionable validation results and never offers final approval", async () => {
+  const user = userEvent.setup();
+  const invalid = { ...configuration, status: "VALIDATION_FAILED", validation: { ...configuration.validation, result: "INVALID" as const, validated_hash: configuration.validation.draft_hash, errors: [{ section: "load", message: "Incremental load requires a watermark." }] } };
+  vi.spyOn(api, "onboardingConfiguration").mockResolvedValue(configuration);
+  vi.spyOn(api, "validateOnboardingConfiguration").mockResolvedValue(invalid);
+  renderRoute(<ConfigurationBuilderPage />, "/onboarding/onboarding-123/configure", "/onboarding/:onboardingId/configure");
+
+  await user.click(await screen.findByRole("button", { name: "Validate configuration" }));
+  expect(await screen.findByText(/Incremental load requires a watermark/)).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /Approve Dataset/ })).not.toBeInTheDocument();
+  expect(screen.getByText(/No approval or pipeline run/)).toBeInTheDocument();
+});
+
+it("requires explicit nested JSON normalization before later configuration", async () => {
+  const user = userEvent.setup();
+  const nested = { ...configuration, source_type: "json", review_complete: false, normalization_complete: false, columns: [{ ...configuration.columns[0], name: "order", source: "order" }] };
+  const normalized = { ...nested, review_complete: true, normalization_complete: true };
+  vi.spyOn(api, "onboardingConfiguration").mockResolvedValue(nested);
+  const update = vi.spyOn(api, "updateOnboardingNormalization").mockResolvedValue(normalized);
+  renderRoute(<ConfigurationBuilderPage />, "/onboarding/onboarding-123/configure", "/onboarding/:onboardingId/configure");
+
+  expect(await screen.findByRole("heading", { name: "JSON Normalization" })).toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "Transformations" })).not.toBeInTheDocument();
+  await user.type(screen.getByLabelText("Base field mappings"), "order_id=order.id");
+  await user.clear(screen.getByLabelText("Canonical columns"));
+  await user.type(screen.getByLabelText("Canonical columns"), "order_id:string:required");
+  await user.click(screen.getByRole("button", { name: "Save normalization" }));
+  expect(update).toHaveBeenCalledWith("onboarding-123", expect.objectContaining({ fields: { order_id: "order.id" } }));
 });

@@ -281,3 +281,40 @@ export interface SchemaDecision {
   nullable: boolean;
   format: string | null;
 }
+
+export interface ConfigurationColumn {
+  name: string;
+  source: string;
+  datatype: string;
+  nullable: boolean;
+  format: string | null;
+  classification: string | null;
+  quarantine_value: "full" | "masked" | "hashed" | "none";
+}
+
+export interface ConfigurationValidation {
+  result: "VALID" | "INVALID" | "NOT_VALIDATED";
+  draft_hash: string;
+  validated_hash: string | null;
+  validated_at: string | null;
+  errors: { section: string; field?: string; message: string }[];
+}
+
+export interface OnboardingConfiguration {
+  onboarding_id: string;
+  dataset: string;
+  source_type: string;
+  status: string;
+  review_complete: boolean;
+  normalization_complete: boolean;
+  columns: ConfigurationColumn[];
+  post_transformation_columns: { name: string; datatype: string }[];
+  accepted_key_candidates: string[];
+  normalization: Record<string, unknown> | null;
+  transformations: Record<string, unknown>[];
+  contracts: Record<string, unknown>[];
+  load: Record<string, unknown>;
+  schema_drift: Record<string, string>;
+  validation: ConfigurationValidation;
+  final_approved: false;
+}

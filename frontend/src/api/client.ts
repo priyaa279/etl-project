@@ -11,6 +11,7 @@ import type {
   UploadOperation,
   DraftYAML,
   OnboardingCapability,
+  OnboardingConfiguration,
   OnboardingReview,
   OnboardingSession,
   SchemaDecision,
@@ -125,6 +126,73 @@ export const api = {
     ),
   onboardingYAML: (onboardingId: string) =>
     request<DraftYAML>(`/api/onboarding/${encodeURIComponent(onboardingId)}/yaml`),
+  onboardingConfiguration: (onboardingId: string) =>
+    request<OnboardingConfiguration>(
+      `/api/onboarding/${encodeURIComponent(onboardingId)}/configuration`,
+    ),
+  updateOnboardingNormalization: (onboardingId: string, value: Record<string, unknown>) =>
+    request<OnboardingConfiguration>(
+      `/api/onboarding/${encodeURIComponent(onboardingId)}/normalization`,
+      { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(value) },
+    ),
+  addOnboardingTransformation: (onboardingId: string, value: Record<string, unknown>) =>
+    request<OnboardingConfiguration>(
+      `/api/onboarding/${encodeURIComponent(onboardingId)}/transformations`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(value) },
+    ),
+  updateOnboardingTransformation: (onboardingId: string, id: string, value: Record<string, unknown>) =>
+    request<OnboardingConfiguration>(
+      `/api/onboarding/${encodeURIComponent(onboardingId)}/transformations/${encodeURIComponent(id)}`,
+      { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(value) },
+    ),
+  deleteOnboardingTransformation: (onboardingId: string, id: string) =>
+    request<OnboardingConfiguration>(
+      `/api/onboarding/${encodeURIComponent(onboardingId)}/transformations/${encodeURIComponent(id)}`,
+      { method: "DELETE" },
+    ),
+  moveOnboardingTransformation: (onboardingId: string, id: string, direction: "up" | "down") =>
+    request<OnboardingConfiguration>(
+      `/api/onboarding/${encodeURIComponent(onboardingId)}/transformations/${encodeURIComponent(id)}/move`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ direction }) },
+    ),
+  addOnboardingContract: (onboardingId: string, value: Record<string, unknown>) =>
+    request<OnboardingConfiguration>(
+      `/api/onboarding/${encodeURIComponent(onboardingId)}/contracts`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(value) },
+    ),
+  updateOnboardingContract: (onboardingId: string, id: string, value: Record<string, unknown>) =>
+    request<OnboardingConfiguration>(
+      `/api/onboarding/${encodeURIComponent(onboardingId)}/contracts/${encodeURIComponent(id)}`,
+      { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(value) },
+    ),
+  deleteOnboardingContract: (onboardingId: string, id: string) =>
+    request<OnboardingConfiguration>(
+      `/api/onboarding/${encodeURIComponent(onboardingId)}/contracts/${encodeURIComponent(id)}`,
+      { method: "DELETE" },
+    ),
+  updateOnboardingPrivacy: (
+    onboardingId: string,
+    field: string,
+    value: { classification: string | null; quarantine_value: "full" | "masked" | "hashed" | "none" },
+  ) => request<OnboardingConfiguration>(
+    `/api/onboarding/${encodeURIComponent(onboardingId)}/columns/${encodeURIComponent(field)}/privacy`,
+    { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(value) },
+  ),
+  updateOnboardingLoad: (onboardingId: string, value: Record<string, unknown>) =>
+    request<OnboardingConfiguration>(
+      `/api/onboarding/${encodeURIComponent(onboardingId)}/load`,
+      { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(value) },
+    ),
+  updateOnboardingDrift: (onboardingId: string, value: Record<string, string>) =>
+    request<OnboardingConfiguration>(
+      `/api/onboarding/${encodeURIComponent(onboardingId)}/schema-drift`,
+      { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(value) },
+    ),
+  validateOnboardingConfiguration: (onboardingId: string) =>
+    request<OnboardingConfiguration>(
+      `/api/onboarding/${encodeURIComponent(onboardingId)}/validate`,
+      { method: "POST" },
+    ),
   datasetRuns: (dataset: string, limit = 20) =>
     request<RunDetail[]>(
       `/api/datasets/${encodeURIComponent(dataset)}/runs${query({ limit })}`,

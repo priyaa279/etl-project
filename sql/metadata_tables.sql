@@ -106,15 +106,35 @@ CREATE TABLE IF NOT EXISTS etl_app.onboarding_sessions (
     draft_key TEXT UNIQUE,
     status TEXT NOT NULL CHECK (status IN (
         'UPLOADED', 'PROFILING', 'NEEDS_REVIEW',
-        'REVIEW_IN_PROGRESS', 'REVIEW_COMPLETE', 'FAILED'
+        'REVIEW_IN_PROGRESS', 'REVIEW_COMPLETE', 'CONFIGURING',
+        'READY_FOR_VALIDATION', 'VALIDATION_FAILED',
+        'READY_FOR_APPROVAL', 'FAILED'
     )),
     uploaded_at TIMESTAMPTZ NOT NULL,
     profiled_at TIMESTAMPTZ,
     updated_at TIMESTAMPTZ NOT NULL,
     profile_result JSONB,
     key_decisions JSONB NOT NULL DEFAULT '{}'::jsonb,
+    validation_hash TEXT,
+    validation_errors JSONB,
+    validated_at TIMESTAMPTZ,
     safe_error TEXT
 );
+
+ALTER TABLE etl_app.onboarding_sessions
+    ADD COLUMN IF NOT EXISTS validation_hash TEXT,
+    ADD COLUMN IF NOT EXISTS validation_errors JSONB,
+    ADD COLUMN IF NOT EXISTS validated_at TIMESTAMPTZ;
+
+ALTER TABLE etl_app.onboarding_sessions
+    DROP CONSTRAINT IF EXISTS onboarding_sessions_status_check;
+
+ALTER TABLE etl_app.onboarding_sessions
+    ADD CONSTRAINT onboarding_sessions_status_check CHECK (status IN (
+        'UPLOADED', 'PROFILING', 'NEEDS_REVIEW', 'REVIEW_IN_PROGRESS',
+        'REVIEW_COMPLETE', 'CONFIGURING', 'READY_FOR_VALIDATION',
+        'VALIDATION_FAILED', 'READY_FOR_APPROVAL', 'FAILED'
+    ));
 
 CREATE INDEX IF NOT EXISTS onboarding_sessions_updated_idx
     ON etl_app.onboarding_sessions (updated_at DESC);

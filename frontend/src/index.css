@@ -261,6 +261,14 @@ select:focus-visible {
   cursor: pointer;
 }
 
+.icon-button {
+  @apply inline-flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 transition hover:border-cyan-300 hover:text-cyan-800 disabled:cursor-not-allowed disabled:opacity-40;
+}
+
+.danger-button {
+  @apply inline-flex items-center justify-center gap-2 rounded-lg bg-rose-700 px-4 py-2 text-sm font-bold text-white transition hover:bg-rose-800;
+}
+
 .primary-button {
   display: inline-flex;
   align-items: center;

@@ -4,6 +4,7 @@ import hashlib
 import re
 import shutil
 import uuid
+from copy import deepcopy
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -12,10 +13,12 @@ from typing import Any
 import yaml
 from fastapi import UploadFile
 
-from metadata_etl.config import load_config
-from metadata_etl.errors import ConfigError, ProfilingError
+from metadata_etl.config import ETLConfig, load_config
+from metadata_etl.errors import ConfigError, ETLError, ProfilingError
 from metadata_etl.onboarding import generate_starter_config, profile_file
 from metadata_etl.transformations.operators.base import SUPPORTED_TYPES
+from metadata_etl.transformations.registry import default_registry
+from metadata_etl.validation import validate_plan
 from metadata_etl_api.catalog import DatasetCatalog
 from metadata_etl_api.onboarding_operations import (
     OnboardingCollisionError,
@@ -38,6 +41,13 @@ DATE_FORMATS = {
     "%Y-%m-%dT%H:%M:%S",
 }
 NESTED_REASON = "nested_structure_requires_explicit_normalization"
+DRIFT_SETTINGS = {
+    "added_columns",
+    "removed_columns",
+    "datatype_change",
+    "canonical_change",
+    "raw_structure_change",
+}
 
 
 class OnboardingError(RuntimeError):
@@ -161,7 +171,15 @@ class OnboardingService:
     def profile(self, onboarding_id: str) -> dict[str, Any]:
         self._require_enabled()
         record = self._record(onboarding_id)
-        if record["status"] in {"NEEDS_REVIEW", "REVIEW_IN_PROGRESS", "REVIEW_COMPLETE"}:
+        if record["status"] in {
+            "NEEDS_REVIEW",
+            "REVIEW_IN_PROGRESS",
+            "REVIEW_COMPLETE",
+            "CONFIGURING",
+            "READY_FOR_VALIDATION",
+            "VALIDATION_FAILED",
+            "READY_FOR_APPROVAL",
+        }:
             return self.get(onboarding_id)
         if record["status"] == "PROFILING":
             raise OnboardingError(409, "Profiling is already in progress.")
@@ -324,6 +342,351 @@ class OnboardingService:
         )
         return self.review(onboarding_id)
 
+    def configuration(self, onboarding_id: str) -> dict[str, Any]:
+        record = self._record(onboarding_id)
+        draft = self._draft(record)
+        review = self._review_model(
+            record,
+            draft,
+            record.get("profile_result") or {},
+            record.get("key_decisions") or {},
+        )
+        path = self._draft_path_for_record(record)
+        current_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+        validated_hash = record.get("validation_hash")
+        validation_current = bool(validated_hash) and validated_hash == current_hash
+        if validation_current and record["status"] == "READY_FOR_APPROVAL":
+            result = "VALID"
+        elif validation_current and record["status"] == "VALIDATION_FAILED":
+            result = "INVALID"
+        else:
+            result = "NOT_VALIDATED"
+        post_schema = self._post_transformation_schema(path, draft)
+        columns = [
+            {
+                "name": name,
+                "source": value.get("source", name),
+                "datatype": value.get("type"),
+                "nullable": bool(value.get("nullable", True)),
+                "format": value.get("format"),
+                "classification": value.get("classification"),
+                "quarantine_value": value.get("quarantine", {}).get("value", "none"),
+            }
+            for name, value in draft.get("columns", {}).items()
+        ]
+        nested = bool((record.get("profile_result") or {}).get("nested_fields"))
+        json_normalization = draft.get("normalization", {}).get("json")
+        return {
+            "onboarding_id": onboarding_id,
+            "dataset": record["proposed_dataset_name"],
+            "source_type": record["source_type"],
+            "status": record["status"],
+            "review_complete": review["progress"]["remaining"] == 0,
+            "normalization_complete": not nested or bool(json_normalization),
+            "columns": columns,
+            "post_transformation_columns": [
+                {"name": name, "datatype": datatype} for name, datatype in post_schema.items()
+            ],
+            "accepted_key_candidates": sorted(
+                field
+                for field, decision in (record.get("key_decisions") or {}).items()
+                if decision == "accepted"
+            ),
+            "normalization": deepcopy(json_normalization),
+            "transformations": deepcopy(draft.get("transformations", [])),
+            "contracts": deepcopy(draft.get("contracts", [])),
+            "load": deepcopy(draft.get("load", {})),
+            "schema_drift": deepcopy(draft.get("schema_drift", {})),
+            "validation": {
+                "result": result,
+                "draft_hash": current_hash,
+                "validated_hash": validated_hash if validation_current else None,
+                "validated_at": record.get("validated_at") if validation_current else None,
+                "errors": deepcopy(record.get("validation_errors") or [])
+                if validation_current
+                else [],
+            },
+            "final_approved": False,
+        }
+
+    def update_normalization(self, onboarding_id: str, value: dict[str, Any]) -> dict[str, Any]:
+        self._require_enabled()
+        record = self._record(onboarding_id)
+        if record["source_type"] != "json":
+            raise OnboardingError(409, "JSON normalization applies only to JSON onboarding.")
+        draft = self._draft(record)
+        fields = value.get("fields")
+        columns = value.get("columns")
+        if not isinstance(fields, dict) or not isinstance(columns, dict) or not columns:
+            raise OnboardingError(422, "JSON normalization requires field mappings and columns.")
+        json_config: dict[str, Any] = {"fields": deepcopy(fields)}
+        if value.get("root_path"):
+            json_config["root_path"] = value["root_path"]
+        explode = value.get("explode")
+        if explode is not None:
+            if not isinstance(explode, dict):
+                raise OnboardingError(422, "JSON explode configuration must be a mapping.")
+            json_config["explode"] = deepcopy(explode)
+        configured_columns: dict[str, dict[str, Any]] = {}
+        for name, settings in columns.items():
+            if not isinstance(settings, dict):
+                raise OnboardingError(422, "Every normalized column must be a mapping.")
+            column = {
+                "source": name,
+                "type": settings.get("type"),
+                "nullable": settings.get("nullable", True),
+            }
+            if settings.get("format") is not None:
+                column["format"] = settings["format"]
+            if settings.get("classification") is not None:
+                column["classification"] = settings["classification"]
+            column["quarantine"] = {"value": settings.get("quarantine_value", "none")}
+            configured_columns[str(name)] = column
+        draft.setdefault("normalization", {})["json"] = json_config
+        draft["columns"] = configured_columns
+        return self._persist_configuration(record, draft)
+
+    def add_transformation(self, onboarding_id: str, value: dict[str, Any]) -> dict[str, Any]:
+        record, draft = self._advanced_draft(onboarding_id)
+        transformations = draft.setdefault("transformations", [])
+        if not isinstance(transformations, list):
+            raise OnboardingError(409, "Draft transformations are invalid.")
+        transformations.append(self._transformation_value(value))
+        return self._persist_configuration(record, draft)
+
+    def edit_transformation(
+        self, onboarding_id: str, item_id: str, value: dict[str, Any]
+    ) -> dict[str, Any]:
+        record, draft = self._advanced_draft(onboarding_id)
+        index = self._item_index(draft.get("transformations"), item_id, "Transformation")
+        if value.get("id") not in {None, item_id}:
+            raise OnboardingError(422, "Transformation ID cannot be changed.")
+        replacement = self._transformation_value(value)
+        replacement["id"] = item_id
+        draft["transformations"][index] = replacement
+        return self._persist_configuration(record, draft)
+
+    def delete_transformation(self, onboarding_id: str, item_id: str) -> dict[str, Any]:
+        record, draft = self._advanced_draft(onboarding_id)
+        index = self._item_index(draft.get("transformations"), item_id, "Transformation")
+        del draft["transformations"][index]
+        return self._persist_configuration(record, draft)
+
+    def move_transformation(
+        self, onboarding_id: str, item_id: str, direction: str
+    ) -> dict[str, Any]:
+        record, draft = self._advanced_draft(onboarding_id)
+        items = draft.get("transformations")
+        index = self._item_index(items, item_id, "Transformation")
+        target = index - 1 if direction == "up" else index + 1
+        if target < 0 or target >= len(items):
+            raise OnboardingError(409, "Transformation is already at that boundary.")
+        items[index], items[target] = items[target], items[index]
+        return self._persist_configuration(record, draft)
+
+    def add_contract(self, onboarding_id: str, value: dict[str, Any]) -> dict[str, Any]:
+        record, draft = self._advanced_draft(onboarding_id)
+        contracts = draft.setdefault("contracts", [])
+        if not isinstance(contracts, list):
+            raise OnboardingError(409, "Draft contracts are invalid.")
+        contracts.append(deepcopy(value))
+        return self._persist_configuration(record, draft)
+
+    def edit_contract(
+        self, onboarding_id: str, item_id: str, value: dict[str, Any]
+    ) -> dict[str, Any]:
+        record, draft = self._advanced_draft(onboarding_id)
+        index = self._item_index(draft.get("contracts"), item_id, "Contract")
+        if value.get("id") not in {None, item_id}:
+            raise OnboardingError(422, "Contract ID cannot be changed.")
+        replacement = deepcopy(value)
+        replacement["id"] = item_id
+        draft["contracts"][index] = replacement
+        return self._persist_configuration(record, draft)
+
+    def delete_contract(self, onboarding_id: str, item_id: str) -> dict[str, Any]:
+        record, draft = self._advanced_draft(onboarding_id)
+        index = self._item_index(draft.get("contracts"), item_id, "Contract")
+        del draft["contracts"][index]
+        return self._persist_configuration(record, draft)
+
+    def update_column_privacy(
+        self, onboarding_id: str, field: str, decision: dict[str, Any]
+    ) -> dict[str, Any]:
+        record, draft = self._advanced_draft(onboarding_id)
+        column = draft.get("columns", {}).get(field)
+        if not isinstance(column, dict):
+            raise OnboardingError(404, "Column not found.")
+        classification = decision.get("classification")
+        if classification is None:
+            column.pop("classification", None)
+        else:
+            column["classification"] = classification
+        column["quarantine"] = {"value": decision.get("quarantine_value")}
+        return self._persist_configuration(record, draft)
+
+    def update_load(self, onboarding_id: str, value: dict[str, Any]) -> dict[str, Any]:
+        record, draft = self._advanced_draft(onboarding_id)
+        strategy = str(value.get("strategy", "")).lower()
+        section_fields = {
+            "full": set(),
+            "incremental": {"watermark"},
+            "upsert": {"keys"},
+            "scd2": {"keys", "tracked_columns", "effective_timestamp", "history_columns"},
+        }
+        if strategy not in section_fields:
+            raise OnboardingError(422, "Load strategy is not supported.")
+        unknown = set(value) - {"strategy"} - section_fields[strategy]
+        if unknown:
+            raise OnboardingError(422, f"Unsupported load settings: {sorted(unknown)}")
+        current = draft.get("load", {})
+        load = {
+            "strategy": strategy,
+            "connection_env": current.get("connection_env", "ETL_POSTGRES_DSN"),
+            "schema": current.get("schema", "public"),
+            "staging_table": current.get("staging_table"),
+            "target_table": current.get("target_table"),
+        }
+        for key in section_fields[strategy]:
+            if key in value:
+                load[key] = deepcopy(value[key])
+        draft["load"] = load
+        return self._persist_configuration(record, draft)
+
+    def update_schema_drift(self, onboarding_id: str, value: dict[str, str]) -> dict[str, Any]:
+        record, draft = self._advanced_draft(onboarding_id)
+        if set(value) - DRIFT_SETTINGS:
+            raise OnboardingError(422, "Schema-drift setting is not supported.")
+        merged = dict(draft.get("schema_drift", {}))
+        merged.update(value)
+        draft["schema_drift"] = merged
+        return self._persist_configuration(record, draft)
+
+    def validate_configuration(self, onboarding_id: str) -> dict[str, Any]:
+        self._require_enabled()
+        record = self._record(onboarding_id)
+        draft = self._draft(record)
+        path = self._draft_path_for_record(record)
+        current_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+        review = self._review_model(
+            record,
+            draft,
+            record.get("profile_result") or {},
+            record.get("key_decisions") or {},
+        )
+        errors: list[dict[str, str]] = []
+        for item in review["unresolved"]:
+            errors.append(
+                {
+                    "section": "schema_review",
+                    "field": item["field"],
+                    "message": f"Resolve {item['reason']} before validation.",
+                }
+            )
+        nested = bool((record.get("profile_result") or {}).get("nested_fields"))
+        if nested and not draft.get("normalization", {}).get("json"):
+            errors.append(
+                {
+                    "section": "normalization",
+                    "message": "Nested JSON requires explicit normalization.",
+                }
+            )
+        if not errors:
+            try:
+                config = self._validate_draft(path)
+                validate_plan(config, source_override=self._landing_path(record["landing_key"]))
+            except (ETLError, OSError, ValueError) as exc:
+                errors.append({"section": "configuration", "message": self._safe_detail(exc)})
+        now = datetime.now(UTC)
+        status = "VALIDATION_FAILED" if errors else "READY_FOR_APPROVAL"
+        self.repository.set_validation(
+            onboarding_id,
+            status=status,
+            validation_hash=current_hash,
+            validation_errors=errors,
+            validated_at=now,
+        )
+        return self.configuration(onboarding_id)
+
+    def _advanced_draft(self, onboarding_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
+        self._require_enabled()
+        record = self._record(onboarding_id)
+        draft = self._draft(record)
+        review = self._review_model(
+            record,
+            draft,
+            record.get("profile_result") or {},
+            record.get("key_decisions") or {},
+        )
+        if review["progress"]["remaining"]:
+            raise OnboardingError(409, "Complete schema and profiler review before configuration.")
+        return record, draft
+
+    def _persist_configuration(
+        self, record: dict[str, Any], draft: dict[str, Any]
+    ) -> dict[str, Any]:
+        self._force_unapproved(draft)
+        try:
+            self._write_validated_yaml(
+                self._draft_path_for_record(record),
+                draft,
+                replace_existing=True,
+                runtime_record=record,
+            )
+        except (ETLError, OSError, ValueError, yaml.YAMLError) as exc:
+            raise OnboardingError(422, self._safe_detail(exc)) from exc
+        self.repository.set_configuration(
+            record["onboarding_id"], status="CONFIGURING", updated_at=datetime.now(UTC)
+        )
+        return self.configuration(record["onboarding_id"])
+
+    @staticmethod
+    def _item_index(items: Any, item_id: str, label: str) -> int:
+        if not isinstance(items, list):
+            raise OnboardingError(409, f"Draft {label.lower()} list is invalid.")
+        for index, item in enumerate(items):
+            if isinstance(item, dict) and item.get("id") == item_id:
+                return index
+        raise OnboardingError(404, f"{label} not found.")
+
+    @staticmethod
+    def _transformation_value(value: dict[str, Any]) -> dict[str, Any]:
+        result = deepcopy(value)
+        if result.get("type") != "map" or not isinstance(result.get("mappings"), list):
+            return result
+        configured: dict[Any, Any] = {}
+        for index, row in enumerate(result["mappings"]):
+            if not isinstance(row, dict) or set(row) != {"source", "result"}:
+                raise OnboardingError(
+                    422, f"Map row {index + 1} requires source and result values."
+                )
+            source = row["source"]
+            if isinstance(source, dict | list) or source in configured:
+                raise OnboardingError(422, "Map source values must be scalar and unique.")
+            configured[source] = row["result"]
+        result["mappings"] = configured
+        return result
+
+    @staticmethod
+    def _post_transformation_schema(path: Path, draft: dict[str, Any]) -> dict[str, str]:
+        config = load_config(path, require_source=False, allow_unapproved=True)
+        schema = {column.name: column.datatype for column in config.columns}
+        registry = default_registry()
+        for index, item in enumerate(draft.get("transformations", [])):
+            registry.validate(item.get("type", ""), item, f"transformations[{index}]", schema)
+        return schema
+
+    def _safe_detail(self, exc: Exception) -> str:
+        detail = str(exc) or "Configuration validation failed."
+        for path in (
+            self.settings.onboarding_root.resolve(),
+            self.settings.draft_config_dir.resolve(),
+            Path.cwd().resolve(),
+        ):
+            detail = detail.replace(str(path), "<internal>")
+            detail = detail.replace(path.as_posix(), "<internal>")
+        return detail[:600]
+
     @staticmethod
     def _status_for(model: dict[str, Any]) -> str:
         progress = model["progress"]
@@ -350,10 +713,11 @@ class OnboardingService:
         review.update(required=True, approved=False, approved_by=None)
 
     @staticmethod
-    def _validate_draft(path: Path) -> None:
+    def _validate_draft(path: Path) -> ETLConfig:
         config = load_config(path, require_source=False, allow_unapproved=True)
         if config.raw.get("review", {}).get("approved") is not False:
             raise OnboardingError(409, "Draft configuration must remain unapproved.")
+        return config
 
     def _review_model(
         self,
@@ -504,7 +868,12 @@ class OnboardingService:
         return value
 
     def _write_validated_yaml(
-        self, path: Path, value: dict[str, Any], *, replace_existing: bool
+        self,
+        path: Path,
+        value: dict[str, Any],
+        *,
+        replace_existing: bool,
+        runtime_record: dict[str, Any] | None = None,
     ) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists() and not replace_existing:
@@ -514,7 +883,12 @@ class OnboardingService:
             temporary.write_text(
                 yaml.safe_dump(value, sort_keys=False, allow_unicode=True), encoding="utf-8"
             )
-            self._validate_draft(temporary)
+            config = self._validate_draft(temporary)
+            if runtime_record is not None:
+                validate_plan(
+                    config,
+                    source_override=self._landing_path(runtime_record["landing_key"]),
+                )
             temporary.replace(path)
         except Exception:
             temporary.unlink(missing_ok=True)

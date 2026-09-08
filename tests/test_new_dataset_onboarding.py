@@ -49,6 +49,9 @@ class MemoryOnboardingRepository:
             "profile_result": None,
             "key_decisions": {},
             "safe_error": None,
+            "validation_hash": None,
+            "validation_errors": None,
+            "validated_at": None,
         }
         self.records[record["onboarding_id"]] = record
         return deepcopy(record)
@@ -77,6 +80,24 @@ class MemoryOnboardingRepository:
         return deepcopy(self.records[onboarding_id])
 
     def set_review(self, onboarding_id: str, **values: Any) -> dict[str, Any]:
+        self.records[onboarding_id].update(
+            **values,
+            validation_hash=None,
+            validation_errors=None,
+            validated_at=None,
+        )
+        return deepcopy(self.records[onboarding_id])
+
+    def set_configuration(self, onboarding_id: str, **values: Any) -> dict[str, Any]:
+        self.records[onboarding_id].update(
+            **values,
+            validation_hash=None,
+            validation_errors=None,
+            validated_at=None,
+        )
+        return deepcopy(self.records[onboarding_id])
+
+    def set_validation(self, onboarding_id: str, **values: Any) -> dict[str, Any]:
         self.records[onboarding_id].update(**values)
         return deepcopy(self.records[onboarding_id])
 
@@ -130,6 +151,35 @@ def _create(
         data={"dataset_name": dataset, "source_type": source_type},
         files={"file": (filename, content, "application/octet-stream")},
     )
+
+
+def _profile_and_complete_review(client: TestClient, onboarding_id: str) -> dict[str, Any]:
+    assert client.post(f"/api/onboarding/{onboarding_id}/profile").status_code == 200
+    review = client.get(f"/api/onboarding/{onboarding_id}/review").json()
+    for item in review["fields"]:
+        if item["review_required"] and not item["review_resolved"]:
+            date_format = (
+                "%d/%m/%Y" if item["reason"] == "ambiguous_date_format" else item["format"]
+            )
+            response = client.patch(
+                f"/api/onboarding/{onboarding_id}/schema/{item['canonical_name']}",
+                json={
+                    "canonical_name": item["canonical_name"],
+                    "datatype": item["datatype"],
+                    "nullable": item["nullable"],
+                    "format": date_format,
+                },
+            )
+            assert response.status_code == 200, response.text
+    review = client.get(f"/api/onboarding/{onboarding_id}/review").json()
+    for item in review["fields"]:
+        if item["key_candidate"] and item["key_decision"] is None:
+            response = client.post(
+                f"/api/onboarding/{onboarding_id}/key-decisions",
+                json={"field": item["canonical_name"], "decision": "rejected"},
+            )
+            assert response.status_code == 200, response.text
+    return client.get(f"/api/onboarding/{onboarding_id}/configuration").json()
 
 
 def test_gate_defaults_to_safe_and_write_endpoint_returns_403(tmp_path: Path) -> None:
@@ -386,6 +436,332 @@ def test_nested_json_is_described_but_normalization_remains_unresolved(tmp_path:
     assert nested["profile"]["observed_examples"] == ["array (1 item; object elements)"]
     assert "sku" not in str(nested["profile"]["observed_examples"])
     assert review["final_approved"] is False
+
+
+def test_configuration_operators_persist_validate_and_reorder(tmp_path: Path) -> None:
+    client, repository, settings = _client(tmp_path)
+    onboarding_id = _create(client).json()["onboarding_id"]
+    configuration = _profile_and_complete_review(client, onboarding_id)
+    assert configuration["review_complete"] is True
+
+    operators = [
+        {"id": "T001", "type": "cast", "column": "student_id", "datatype": "string"},
+        {"id": "T002", "type": "filter", "condition": "student_id <> ''"},
+        {
+            "id": "T003",
+            "type": "derive",
+            "target_column": "profile_score",
+            "datatype": "integer",
+            "expression": "1",
+        },
+        {
+            "id": "T004",
+            "type": "map",
+            "column": "advisor",
+            "datatype": "string",
+            "mappings": {"a@example.test": "assigned"},
+            "default": "unassigned",
+        },
+        {
+            "id": "T005",
+            "type": "deduplicate",
+            "keys": ["student_id"],
+            "order_by": {"enrolled_on": "desc"},
+        },
+    ]
+    for operator in operators:
+        response = client.post(f"/api/onboarding/{onboarding_id}/transformations", json=operator)
+        assert response.status_code == 200, response.text
+
+    edited = client.patch(
+        f"/api/onboarding/{onboarding_id}/transformations/T002",
+        json={"id": "T002", "type": "filter", "condition": "student_id IS NOT NULL"},
+    )
+    moved = client.post(
+        f"/api/onboarding/{onboarding_id}/transformations/T005/move",
+        json={"direction": "up"},
+    )
+    removed = client.delete(f"/api/onboarding/{onboarding_id}/transformations/T001")
+
+    assert edited.status_code == moved.status_code == removed.status_code == 200
+    assert [item["id"] for item in moved.json()["transformations"]][-2:] == ["T005", "T004"]
+    draft_path = settings.draft_config_dir / repository.records[onboarding_id]["draft_key"]
+    draft = yaml.safe_load(draft_path.read_text(encoding="utf-8"))
+    assert [item["id"] for item in draft["transformations"]] == ["T002", "T003", "T005", "T004"]
+    assert draft["review"]["approved"] is False
+
+
+def test_invalid_transformation_is_rejected_without_changing_yaml(tmp_path: Path) -> None:
+    client, repository, settings = _client(tmp_path)
+    onboarding_id = _create(client).json()["onboarding_id"]
+    _profile_and_complete_review(client, onboarding_id)
+    draft_path = settings.draft_config_dir / repository.records[onboarding_id]["draft_key"]
+    before = draft_path.read_bytes()
+
+    unsupported = client.post(
+        f"/api/onboarding/{onboarding_id}/transformations",
+        json={"id": "T001", "type": "python", "expression": "danger()"},
+    )
+    missing = client.post(
+        f"/api/onboarding/{onboarding_id}/transformations",
+        json={"id": "T001", "type": "cast", "column": "missing", "datatype": "string"},
+    )
+    duplicate_map = client.post(
+        f"/api/onboarding/{onboarding_id}/transformations",
+        json={
+            "id": "T001",
+            "type": "map",
+            "column": "advisor",
+            "mappings": [
+                {"source": "A", "result": "one"},
+                {"source": "A", "result": "two"},
+            ],
+        },
+    )
+
+    assert unsupported.status_code == 422
+    assert missing.status_code == 422
+    assert duplicate_map.status_code == 422
+    assert draft_path.read_bytes() == before
+
+
+def test_contracts_use_post_transformation_schema_and_privacy_persists(tmp_path: Path) -> None:
+    client, repository, settings = _client(tmp_path)
+    onboarding_id = _create(client).json()["onboarding_id"]
+    _profile_and_complete_review(client, onboarding_id)
+    derived = client.post(
+        f"/api/onboarding/{onboarding_id}/transformations",
+        json={
+            "id": "T001",
+            "type": "derive",
+            "target_column": "profile_score",
+            "datatype": "integer",
+            "expression": "1",
+        },
+    )
+    assert derived.status_code == 200
+
+    contracts = [
+        {"id": "DQ001", "type": "not_null", "column": "student_id"},
+        {"id": "DQ002", "type": "unique", "columns": ["student_id"]},
+        {"id": "DQ003", "type": "range", "column": "profile_score", "min": 0, "max": 4},
+        {"id": "DQ004", "type": "regex", "column": "student_id", "pattern": r"^\d{5}$"},
+    ]
+    for contract in contracts:
+        response = client.post(f"/api/onboarding/{onboarding_id}/contracts", json=contract)
+        assert response.status_code == 200, response.text
+    privacy = client.patch(
+        f"/api/onboarding/{onboarding_id}/columns/student_id/privacy",
+        json={"classification": "restricted", "quarantine_value": "hashed"},
+    )
+    assert privacy.status_code == 200
+    assert (
+        next(item for item in privacy.json()["columns"] if item["name"] == "student_id")[
+            "quarantine_value"
+        ]
+        == "hashed"
+    )
+    draft_path = settings.draft_config_dir / repository.records[onboarding_id]["draft_key"]
+    draft = yaml.safe_load(draft_path.read_text(encoding="utf-8"))
+    assert draft["columns"]["student_id"]["classification"] == "restricted"
+    assert draft["columns"]["student_id"]["quarantine"] == {"value": "hashed"}
+
+
+@pytest.mark.parametrize(
+    "contract",
+    [
+        {"id": "DQ001", "type": "regex", "column": "student_id", "pattern": "["},
+        {"id": "DQ001", "type": "range", "column": "profile_score", "min": 5, "max": 1},
+        {"id": "DQ001", "type": "not_null", "column": "missing"},
+        {"id": "DQ001", "type": "unique", "columns": []},
+    ],
+)
+def test_invalid_contracts_are_rejected(tmp_path: Path, contract: dict[str, Any]) -> None:
+    client, _, _ = _client(tmp_path)
+    onboarding_id = _create(client).json()["onboarding_id"]
+    _profile_and_complete_review(client, onboarding_id)
+    if contract["type"] == "range":
+        response = client.post(
+            f"/api/onboarding/{onboarding_id}/transformations",
+            json={
+                "id": "T001",
+                "type": "derive",
+                "target_column": "profile_score",
+                "datatype": "integer",
+                "expression": "1",
+            },
+        )
+        assert response.status_code == 200
+    response = client.post(f"/api/onboarding/{onboarding_id}/contracts", json=contract)
+    assert response.status_code == 422
+
+
+def test_duplicate_rule_ids_are_rejected(tmp_path: Path) -> None:
+    client, _, _ = _client(tmp_path)
+    onboarding_id = _create(client).json()["onboarding_id"]
+    _profile_and_complete_review(client, onboarding_id)
+    rule = {"id": "DQ001", "type": "not_null", "column": "student_id"}
+    assert client.post(f"/api/onboarding/{onboarding_id}/contracts", json=rule).status_code == 200
+    assert client.post(f"/api/onboarding/{onboarding_id}/contracts", json=rule).status_code == 422
+
+
+def test_load_strategies_validate_and_clear_incompatible_settings(tmp_path: Path) -> None:
+    client, _, _ = _client(tmp_path)
+    onboarding_id = _create(client).json()["onboarding_id"]
+    _profile_and_complete_review(client, onboarding_id)
+    routes = f"/api/onboarding/{onboarding_id}/load"
+
+    incremental = client.patch(
+        routes,
+        json={
+            "strategy": "incremental",
+            "watermark": {"column": "enrolled_on", "type": "date", "initial_value": "2026-01-01"},
+        },
+    )
+    assert incremental.status_code == 200, incremental.text
+    assert client.patch(routes, json={"strategy": "incremental"}).status_code == 422
+    upsert = client.patch(routes, json={"strategy": "upsert", "keys": ["student_id"]})
+    assert upsert.status_code == 200
+    assert "watermark" not in upsert.json()["load"]
+    assert client.patch(routes, json={"strategy": "upsert", "keys": []}).status_code == 422
+    assert (
+        client.patch(
+            routes, json={"strategy": "upsert", "keys": ["student_id", "student_id"]}
+        ).status_code
+        == 422
+    )
+    scd2 = client.patch(
+        routes,
+        json={
+            "strategy": "scd2",
+            "keys": ["student_id"],
+            "tracked_columns": ["advisor"],
+            "effective_timestamp": {"column": "enrolled_on"},
+            "history_columns": {
+                "valid_from": "valid_from",
+                "valid_to": "valid_to",
+                "is_current": "is_current",
+            },
+        },
+    )
+    assert scd2.status_code == 200, scd2.text
+    assert client.patch(routes, json={"strategy": "scd2", "keys": []}).status_code == 422
+    full = client.patch(routes, json={"strategy": "full"})
+    assert full.status_code == 200
+    assert set(full.json()["load"]) == {
+        "strategy",
+        "connection_env",
+        "schema",
+        "staging_table",
+        "target_table",
+    }
+
+
+def test_drift_actions_validate(tmp_path: Path) -> None:
+    client, _, _ = _client(tmp_path)
+    onboarding_id = _create(client).json()["onboarding_id"]
+    _profile_and_complete_review(client, onboarding_id)
+    route = f"/api/onboarding/{onboarding_id}/schema-drift"
+    response = client.patch(
+        route,
+        json={"added_columns": "allow", "removed_columns": "warn", "datatype_change": "fail"},
+    )
+    assert response.status_code == 200
+    assert response.json()["schema_drift"]["added_columns"] == "allow"
+    assert client.patch(route, json={"added_columns": "review"}).status_code == 422
+    assert client.patch(route, json={"renamed_columns": "warn"}).status_code == 422
+
+
+def test_validation_is_hash_bound_unapproved_and_invalidated_by_edit(tmp_path: Path) -> None:
+    client, repository, settings = _client(tmp_path)
+    onboarding_id = _create(client).json()["onboarding_id"]
+    _profile_and_complete_review(client, onboarding_id)
+    validated = client.post(f"/api/onboarding/{onboarding_id}/validate")
+    assert validated.status_code == 200
+    body = validated.json()
+    assert body["status"] == "READY_FOR_APPROVAL"
+    assert body["validation"]["result"] == "VALID"
+    assert body["validation"]["validated_hash"] == body["validation"]["draft_hash"]
+    draft_path = settings.draft_config_dir / repository.records[onboarding_id]["draft_key"]
+    with pytest.raises(ConfigError, match="requires explicit approval"):
+        load_config(draft_path, require_source=False)
+    assert yaml.safe_load(draft_path.read_text(encoding="utf-8"))["review"]["approved"] is False
+
+    edited = client.patch(
+        f"/api/onboarding/{onboarding_id}/schema-drift", json={"added_columns": "allow"}
+    )
+    assert edited.status_code == 200
+    assert edited.json()["status"] == "CONFIGURING"
+    assert edited.json()["validation"]["result"] == "NOT_VALIDATED"
+    assert edited.json()["validation"]["validated_hash"] is None
+
+
+def test_nested_json_normalization_is_explicit_and_runtime_validated(tmp_path: Path) -> None:
+    client, repository, settings = _client(tmp_path)
+    payload = b'{"orders":[{"order":{"id":"001","items":[{"sku":"A","quantity":2}]}}]}'
+    onboarding_id = _create(
+        client,
+        dataset="nested_configuration",
+        source_type="json",
+        filename="orders.json",
+        content=payload,
+    ).json()["onboarding_id"]
+    client.post(f"/api/onboarding/{onboarding_id}/profile")
+    before = client.post(f"/api/onboarding/{onboarding_id}/validate").json()
+    assert before["validation"]["result"] == "INVALID"
+    assert any(item["section"] == "normalization" for item in before["validation"]["errors"])
+
+    invalid = client.patch(
+        f"/api/onboarding/{onboarding_id}/normalization",
+        json={
+            "root_path": "orders",
+            "fields": {"order_id": "order.missing"},
+            "explode": {"path": "order.items", "as": "item", "fields": {"sku": "item.sku"}},
+            "columns": {"order_id": {"type": "string"}, "sku": {"type": "string"}},
+        },
+    )
+    assert invalid.status_code == 422
+    duplicate = client.patch(
+        f"/api/onboarding/{onboarding_id}/normalization",
+        json={
+            "root_path": "orders",
+            "fields": {"order_id": "order.id"},
+            "explode": {
+                "path": "order.items",
+                "as": "item",
+                "fields": {"order_id": "item.sku"},
+            },
+            "columns": {"order_id": {"type": "string"}},
+        },
+    )
+    assert duplicate.status_code == 422
+    valid = client.patch(
+        f"/api/onboarding/{onboarding_id}/normalization",
+        json={
+            "root_path": "orders",
+            "fields": {"order_id": "order.id"},
+            "explode": {
+                "path": "order.items",
+                "as": "item",
+                "fields": {"sku": "item.sku", "quantity": "item.quantity"},
+            },
+            "columns": {
+                "order_id": {"type": "string", "nullable": False},
+                "sku": {"type": "string", "nullable": False},
+                "quantity": {"type": "integer", "nullable": False},
+            },
+        },
+    )
+    assert valid.status_code == 200, valid.text
+    assert valid.json()["normalization_complete"] is True
+    assert valid.json()["review_complete"] is True
+    validated = client.post(f"/api/onboarding/{onboarding_id}/validate")
+    assert validated.json()["validation"]["result"] == "VALID"
+    draft_path = settings.draft_config_dir / repository.records[onboarding_id]["draft_key"]
+    draft = yaml.safe_load(draft_path.read_text(encoding="utf-8"))
+    assert draft["normalization"]["json"]["root_path"] == "orders"
+    assert draft["normalization"]["json"]["explode"]["path"] == "order.items"
+    assert draft["review"]["approved"] is False
 
 
 @pytest.mark.skipif(

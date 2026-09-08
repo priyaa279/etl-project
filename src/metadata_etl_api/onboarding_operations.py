@@ -52,16 +52,44 @@ class OnboardingRepository:
                         draft_key TEXT UNIQUE,
                         status TEXT NOT NULL CHECK (status IN (
                             'UPLOADED', 'PROFILING', 'NEEDS_REVIEW',
-                            'REVIEW_IN_PROGRESS', 'REVIEW_COMPLETE', 'FAILED'
+                            'REVIEW_IN_PROGRESS', 'REVIEW_COMPLETE', 'CONFIGURING',
+                            'READY_FOR_VALIDATION', 'VALIDATION_FAILED',
+                            'READY_FOR_APPROVAL', 'FAILED'
                         )),
                         uploaded_at TIMESTAMPTZ NOT NULL,
                         profiled_at TIMESTAMPTZ,
                         updated_at TIMESTAMPTZ NOT NULL,
                         profile_result JSONB,
                         key_decisions JSONB NOT NULL DEFAULT '{}'::jsonb,
+                        validation_hash TEXT,
+                        validation_errors JSONB,
+                        validated_at TIMESTAMPTZ,
                         safe_error TEXT
                     )
                     """
+                )
+                connection.execute(
+                    "ALTER TABLE etl_app.onboarding_sessions "
+                    "ADD COLUMN IF NOT EXISTS validation_hash TEXT"
+                )
+                connection.execute(
+                    "ALTER TABLE etl_app.onboarding_sessions "
+                    "ADD COLUMN IF NOT EXISTS validation_errors JSONB"
+                )
+                connection.execute(
+                    "ALTER TABLE etl_app.onboarding_sessions "
+                    "ADD COLUMN IF NOT EXISTS validated_at TIMESTAMPTZ"
+                )
+                connection.execute(
+                    "ALTER TABLE etl_app.onboarding_sessions "
+                    "DROP CONSTRAINT IF EXISTS onboarding_sessions_status_check"
+                )
+                connection.execute(
+                    "ALTER TABLE etl_app.onboarding_sessions ADD CONSTRAINT "
+                    "onboarding_sessions_status_check CHECK (status IN ("
+                    "'UPLOADED', 'PROFILING', 'NEEDS_REVIEW', 'REVIEW_IN_PROGRESS', "
+                    "'REVIEW_COMPLETE', 'CONFIGURING', 'READY_FOR_VALIDATION', "
+                    "'VALIDATION_FAILED', 'READY_FOR_APPROVAL', 'FAILED'))"
                 )
                 connection.execute(
                     "CREATE INDEX IF NOT EXISTS onboarding_sessions_updated_idx "
@@ -145,8 +173,41 @@ class OnboardingRepository:
     ) -> dict[str, Any]:
         return self._update(
             onboarding_id,
-            "status = %s, key_decisions = %s, updated_at = %s",
+            "status = %s, key_decisions = %s, updated_at = %s, "
+            "validation_hash = NULL, validation_errors = NULL, validated_at = NULL",
             (status, Jsonb(key_decisions), updated_at),
+        )
+
+    def set_configuration(
+        self, onboarding_id: str, *, status: str, updated_at: datetime
+    ) -> dict[str, Any]:
+        return self._update(
+            onboarding_id,
+            "status = %s, updated_at = %s, validation_hash = NULL, "
+            "validation_errors = NULL, validated_at = NULL",
+            (status, updated_at),
+        )
+
+    def set_validation(
+        self,
+        onboarding_id: str,
+        *,
+        status: str,
+        validation_hash: str,
+        validation_errors: list[dict[str, str]],
+        validated_at: datetime,
+    ) -> dict[str, Any]:
+        return self._update(
+            onboarding_id,
+            "status = %s, validation_hash = %s, validation_errors = %s, "
+            "validated_at = %s, updated_at = %s",
+            (
+                status,
+                validation_hash,
+                Jsonb(validation_errors),
+                validated_at,
+                validated_at,
+            ),
         )
 
     def set_failed(

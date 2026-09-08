@@ -248,3 +248,31 @@ class OnboardingReview(BaseModel):
 class DraftYAML(BaseModel):
     onboarding_id: str
     yaml: str
+
+
+class MoveDirection(BaseModel):
+    direction: Literal["up", "down"]
+
+
+class ColumnPrivacyDecision(BaseModel):
+    classification: str | None = None
+    quarantine_value: Literal["full", "masked", "hashed", "none"]
+
+
+class OnboardingConfiguration(BaseModel):
+    onboarding_id: str
+    dataset: str
+    source_type: str
+    status: str
+    review_complete: bool
+    normalization_complete: bool
+    columns: list[dict[str, Any]]
+    post_transformation_columns: list[dict[str, str]]
+    accepted_key_candidates: list[str]
+    normalization: dict[str, Any] | None
+    transformations: list[dict[str, Any]]
+    contracts: list[dict[str, Any]]
+    load: dict[str, Any]
+    schema_drift: dict[str, str]
+    validation: dict[str, Any]
+    final_approved: Literal[False]

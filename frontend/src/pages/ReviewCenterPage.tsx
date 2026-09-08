@@ -150,6 +150,11 @@ export function ReviewCenterPage() {
   if (capability.error) return <ErrorState message={capability.error} onRetry={capability.reload} />;
   if (!current || !capability.data) return null;
   const supportedTypes = capability.data.supported_datatypes;
+  const canConfigure = current.progress.remaining === 0 || (
+    current.source_type === "json" &&
+    current.unresolved.length > 0 &&
+    current.unresolved.every((item) => item.reason === "nested_structure_requires_explicit_normalization")
+  );
 
   const saveSchema = async (field: string, decision: SchemaDecision) => {
     setReview(await api.updateOnboardingSchema(onboardingId, field, decision));
@@ -188,8 +193,12 @@ export function ReviewCenterPage() {
           <section><SectionHeader title="Schema" description="Every explanation and statistic comes from the persisted profiler proposal." /><div className="grid gap-5">{current.fields.map((field) => <SchemaFieldEditor key={field.canonical_name} field={field} supportedTypes={supportedTypes} onSave={saveSchema} onKeyDecision={saveKey} />)}</div></section>
 
           <section className="panel p-6">
-            <div className="flex items-start gap-3"><KeyRound className="mt-0.5 h-5 w-5 text-cyan-700" aria-hidden="true" /><div><h2 className="font-bold text-slate-950">Review Summary</h2><p className="mt-1 text-sm text-slate-600">The draft remains unapproved. Next: configure transformations, quality rules, load strategy, and final approval in Milestone 10C.2.</p></div></div>
-            <button className="secondary-button mt-4" type="button" disabled>Continue configuration</button>
+            <div className="flex items-start gap-3"><KeyRound className="mt-0.5 h-5 w-5 text-cyan-700" aria-hidden="true" /><div><h2 className="font-bold text-slate-950">Review Summary</h2><p className="mt-1 text-sm text-slate-600">The draft remains unapproved. Continue to configure normalization, transformations, quality rules, loading, and drift policy.</p></div></div>
+            {canConfigure ? (
+              <Link className="primary-button mt-4" to={`/onboarding/${encodeURIComponent(onboardingId)}/configure`}>Continue configuration</Link>
+            ) : (
+              <button className="secondary-button mt-4" type="button" disabled>Continue configuration</button>
+            )}
           </section>
         </div>
       )}

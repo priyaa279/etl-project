@@ -7,13 +7,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from metadata_etl_api.models import (
+    ColumnPrivacyDecision,
     DatasetSummary,
     DatasetUploadCapability,
     DatasetWatermarkResponse,
     DraftYAML,
     HealthResponse,
     KeyCandidateDecision,
+    MoveDirection,
     OnboardingCapability,
+    OnboardingConfiguration,
     OnboardingReview,
     OnboardingSession,
     OverviewResponse,
@@ -71,13 +74,13 @@ def create_app() -> FastAPI:
     application = FastAPI(
         title="ETL Control Center API",
         description="ETL monitoring plus gated data operations and onboarding review.",
-        version="10.2.0",
+        version="10.2.1",
     )
     application.add_middleware(
         CORSMiddleware,
         allow_origins=list(settings.allowed_origins),
         allow_credentials=False,
-        allow_methods=["GET", "POST", "PATCH"],
+        allow_methods=["GET", "POST", "PATCH", "DELETE"],
         allow_headers=["Accept", "Content-Type"],
     )
     application.state.settings = settings
@@ -257,6 +260,146 @@ def create_app() -> FastAPI:
     )
     def onboarding_yaml(onboarding_id: str, onboarding: Onboarding) -> dict[str, str]:
         return onboarding.yaml_content(onboarding_id)
+
+    @application.get(
+        "/api/onboarding/{onboarding_id}/configuration",
+        response_model=OnboardingConfiguration,
+        tags=["onboarding"],
+    )
+    def onboarding_configuration(onboarding_id: str, onboarding: Onboarding) -> dict[str, object]:
+        return onboarding.configuration(onboarding_id)
+
+    @application.patch(
+        "/api/onboarding/{onboarding_id}/normalization",
+        response_model=OnboardingConfiguration,
+        tags=["onboarding"],
+    )
+    def update_onboarding_normalization(
+        onboarding_id: str, value: dict[str, object], onboarding: Onboarding
+    ) -> dict[str, object]:
+        return onboarding.update_normalization(onboarding_id, value)
+
+    @application.post(
+        "/api/onboarding/{onboarding_id}/transformations",
+        response_model=OnboardingConfiguration,
+        tags=["onboarding"],
+    )
+    def add_onboarding_transformation(
+        onboarding_id: str, value: dict[str, object], onboarding: Onboarding
+    ) -> dict[str, object]:
+        return onboarding.add_transformation(onboarding_id, value)
+
+    @application.patch(
+        "/api/onboarding/{onboarding_id}/transformations/{item_id}",
+        response_model=OnboardingConfiguration,
+        tags=["onboarding"],
+    )
+    def edit_onboarding_transformation(
+        onboarding_id: str,
+        item_id: str,
+        value: dict[str, object],
+        onboarding: Onboarding,
+    ) -> dict[str, object]:
+        return onboarding.edit_transformation(onboarding_id, item_id, value)
+
+    @application.delete(
+        "/api/onboarding/{onboarding_id}/transformations/{item_id}",
+        response_model=OnboardingConfiguration,
+        tags=["onboarding"],
+    )
+    def delete_onboarding_transformation(
+        onboarding_id: str, item_id: str, onboarding: Onboarding
+    ) -> dict[str, object]:
+        return onboarding.delete_transformation(onboarding_id, item_id)
+
+    @application.post(
+        "/api/onboarding/{onboarding_id}/transformations/{item_id}/move",
+        response_model=OnboardingConfiguration,
+        tags=["onboarding"],
+    )
+    def move_onboarding_transformation(
+        onboarding_id: str,
+        item_id: str,
+        move: MoveDirection,
+        onboarding: Onboarding,
+    ) -> dict[str, object]:
+        return onboarding.move_transformation(onboarding_id, item_id, move.direction)
+
+    @application.post(
+        "/api/onboarding/{onboarding_id}/contracts",
+        response_model=OnboardingConfiguration,
+        tags=["onboarding"],
+    )
+    def add_onboarding_contract(
+        onboarding_id: str, value: dict[str, object], onboarding: Onboarding
+    ) -> dict[str, object]:
+        return onboarding.add_contract(onboarding_id, value)
+
+    @application.patch(
+        "/api/onboarding/{onboarding_id}/contracts/{item_id}",
+        response_model=OnboardingConfiguration,
+        tags=["onboarding"],
+    )
+    def edit_onboarding_contract(
+        onboarding_id: str,
+        item_id: str,
+        value: dict[str, object],
+        onboarding: Onboarding,
+    ) -> dict[str, object]:
+        return onboarding.edit_contract(onboarding_id, item_id, value)
+
+    @application.delete(
+        "/api/onboarding/{onboarding_id}/contracts/{item_id}",
+        response_model=OnboardingConfiguration,
+        tags=["onboarding"],
+    )
+    def delete_onboarding_contract(
+        onboarding_id: str, item_id: str, onboarding: Onboarding
+    ) -> dict[str, object]:
+        return onboarding.delete_contract(onboarding_id, item_id)
+
+    @application.patch(
+        "/api/onboarding/{onboarding_id}/columns/{field}/privacy",
+        response_model=OnboardingConfiguration,
+        tags=["onboarding"],
+    )
+    def update_onboarding_privacy(
+        onboarding_id: str,
+        field: str,
+        decision: ColumnPrivacyDecision,
+        onboarding: Onboarding,
+    ) -> dict[str, object]:
+        return onboarding.update_column_privacy(onboarding_id, field, decision.model_dump())
+
+    @application.patch(
+        "/api/onboarding/{onboarding_id}/load",
+        response_model=OnboardingConfiguration,
+        tags=["onboarding"],
+    )
+    def update_onboarding_load(
+        onboarding_id: str, value: dict[str, object], onboarding: Onboarding
+    ) -> dict[str, object]:
+        return onboarding.update_load(onboarding_id, value)
+
+    @application.patch(
+        "/api/onboarding/{onboarding_id}/schema-drift",
+        response_model=OnboardingConfiguration,
+        tags=["onboarding"],
+    )
+    def update_onboarding_drift(
+        onboarding_id: str, value: dict[str, str], onboarding: Onboarding
+    ) -> dict[str, object]:
+        return onboarding.update_schema_drift(onboarding_id, value)
+
+    @application.post(
+        "/api/onboarding/{onboarding_id}/validate",
+        response_model=OnboardingConfiguration,
+        tags=["onboarding"],
+    )
+    def validate_onboarding_configuration(
+        onboarding_id: str, onboarding: Onboarding
+    ) -> dict[str, object]:
+        return onboarding.validate_configuration(onboarding_id)
 
     @application.get(
         "/api/datasets/{dataset}/runs", response_model=list[RunDetail], tags=["datasets"]

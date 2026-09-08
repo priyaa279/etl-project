@@ -199,15 +199,46 @@ docker compose up -d --build
 The Docker frontend is available at `http://localhost:4173` and FastAPI at
 `http://localhost:8000/api/health`.
 
-## Milestone 10C.2 boundary
+## Milestone 10C.2A: configuration and pre-approval validation
 
 ```text
 Reviewed draft -> configure transformations, contracts, load and drift policy
-               -> final validation and approval
-               -> approved YAML -> optional Airflow scheduling -> first ETL run
+               -> validate through the existing config model and execution planner
+               -> bind validation to the exact draft SHA-256
+               -> READY_FOR_APPROVAL while review.approved remains false
 ```
 
-10C.1 does not expose final approval, move drafts into the runnable config directory, write Git,
-create DAGs, or run ETL. Those actions and the remaining configuration editors belong to 10C.2.
-Draft discard is also deferred so this phase does not introduce deletion semantics before
+The configuration builder is a structured interface over the existing YAML model. Transformation
+edits use the current `cast`, `filter`, `derive`, `map`, and `deduplicate` registry; contracts use
+the current `not_null`, `unique`, `range`, and `regex` registry. Contracts validate against the
+post-transformation schema. JSON fields and one array explosion are expressed through the existing
+normalization structure and are tested against the landed source. Load choices use only full,
+incremental, upsert, and SCD2. Accepted profiler key candidates are displayed as hints and are never
+applied automatically.
+
+Each structured request writes a temporary YAML candidate, runs existing model and plan validation,
+and atomically replaces the draft only when valid. The database stores workflow state and the hash,
+result, errors, and time of final validation; it does not store a competing configuration model.
+Any subsequent schema, normalization, transformation, contract, load, privacy, or drift edit clears
+that validation identity and returns the session to configuration.
+
+Additional onboarding endpoints:
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /api/onboarding/{id}/configuration` | reload the structured view from actual draft YAML |
+| `PATCH /api/onboarding/{id}/normalization` | persist explicit existing-model JSON normalization |
+| `POST/PATCH/DELETE /api/onboarding/{id}/transformations` | manage registry-backed operators |
+| `POST /api/onboarding/{id}/transformations/{rule_id}/move` | change YAML execution order |
+| `POST/PATCH/DELETE /api/onboarding/{id}/contracts` | manage post-transformation contracts |
+| `PATCH /api/onboarding/{id}/columns/{field}/privacy` | persist existing classification/quarantine policy |
+| `PATCH /api/onboarding/{id}/load` | select and validate an existing load strategy |
+| `PATCH /api/onboarding/{id}/schema-drift` | persist current drift keys and actions |
+| `POST /api/onboarding/{id}/validate` | validate without approving or running |
+
+## Milestone 10C.2B boundary
+
+10C.2A does not expose final approval, move drafts into the runnable config directory, write Git,
+create DAGs, or run ETL. Approval, promotion, optional scheduling, and first execution belong to
+10C.2B. Draft discard is also deferred so this phase does not introduce deletion semantics before
 authentication and the final approval lifecycle are defined.

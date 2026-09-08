@@ -35,8 +35,8 @@ commands; its separate setup and smoke-test instructions appear below.
 
 ## Application UI
 
-Milestone 10C.1 preserves the read-only monitoring application and existing-dataset operations
-while adding a separately gated first phase for completely new datasets:
+Milestone 10C.2A preserves the read-only monitoring application and existing-dataset operations
+while extending separately gated onboarding through final pre-approval validation:
 
 ```text
 Existing approved dataset -> upload -> preflight -> explicit run
@@ -46,13 +46,15 @@ Existing approved dataset -> upload -> preflight -> explicit run
 
 ```text
 Completely new dataset -> upload -> profile -> draft YAML -> human schema review
+  -> explicit normalization -> transformations -> quality -> load and drift policy
+  -> validate exact draft -> READY_FOR_APPROVAL (still approved: false)
 ```
 
 The **ETL Control Center** includes Overview, Datasets, Runs, Data Quality, Schema Drift, and
 Watermarks pages, plus dataset and run detail views. Eligible Dataset Detail pages now link to
 **Upload new data**. PostgreSQL-source datasets clearly show that file upload is not applicable.
-When enabled, **Onboard Dataset** is a separate action that creates only an unapproved draft and
-stops after schema/profiler review; it never schedules Airflow or starts ETL.
+When enabled, **Onboard Dataset** is a separate action that creates and validates only an
+unapproved draft; it never promotes configuration, schedules Airflow, or starts ETL.
 
 Operational writes are disabled by default. Set `ETL_CONTROL_OPERATIONS_ENABLED=true` only in a
 trusted local environment, configure server-side Airflow authentication, and restart the API.
@@ -63,7 +65,8 @@ New-dataset onboarding has its own `ETL_CONTROL_ONBOARDING_ENABLED=false` gate. 
 local/trusted environment until authentication and authorization are added. Uploads are stored in
 Git-ignored `data/onboarding`; generated YAML is stored in Git-ignored `configs/drafts`. Neither is
 served by the frontend. YAML remains the source of truth, while React provides the human-friendly
-review interface.
+review and configuration interface. Every edit is validated server-side and atomically written to
+the actual draft YAML; refreshing the browser reloads that persisted source of truth.
 
 The upload landing area is temporary application input, not ETL evidence. Once Airflow invokes the
 CLI with `--source-override`, the normal connector preserves a separate immutable raw artifact.
@@ -82,7 +85,7 @@ docker compose up -d --build
 - Airflow: `http://localhost:8080`
 
 For separate frontend/API development commands, endpoint details, privacy boundaries, and the
-10A, 10B, and 10C.1 boundaries, see
+10A, 10B, 10C.1, and 10C.2A boundaries, see
 [frontend architecture](docs/frontend_architecture.md).
 
 ## Portfolio proof
@@ -181,16 +184,20 @@ inference. Those belong to later milestones.
 
 ## Dataset onboarding flow
 
-The Control Center implements the first phase for CSV, JSON, and Parquet files:
+The Control Center implements profiled, human-reviewed configuration for CSV, JSON, and Parquet files:
 
 ```text
 Upload -> existing profiler -> existing starter-config generator -> unapproved draft YAML
        -> Understanding View / read-only YAML View -> persisted schema decisions
+       -> explicit JSON normalization where needed
+       -> transformations -> contracts and quarantine privacy -> load -> drift
+       -> validate exact draft and uploaded source -> READY_FOR_APPROVAL
 ```
 
 The profiler proposes. The human approves. The engine executes only approved configuration.
-Milestone 10C.1 intentionally stops before final approval. Transformations, quality contracts,
-load configuration, final approval, and the first ETL run are deferred to Milestone 10C.2.
+Milestone 10C.2A intentionally stops before final approval. The YAML remains `approved: false` even
+after successful validation. Promotion, Git workflow, scheduling, and the first ETL run are
+deferred to Milestone 10C.2B.
 
 The existing CLI onboarding flow remains available:
 

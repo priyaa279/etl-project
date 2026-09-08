@@ -39,6 +39,9 @@ const OnboardingSessionPage = lazy(() =>
 const ReviewCenterPage = lazy(() =>
   import("./pages/ReviewCenterPage").then((module) => ({ default: module.ReviewCenterPage })),
 );
+const ConfigurationBuilderPage = lazy(() =>
+  import("./pages/ConfigurationBuilderPage").then((module) => ({ default: module.ConfigurationBuilderPage })),
+);
 
 export function App() {
   return (
@@ -52,6 +55,7 @@ export function App() {
           <Route path="onboarding/new" element={<OnboardingNewPage />} />
           <Route path="onboarding/:onboardingId" element={<OnboardingSessionPage />} />
           <Route path="onboarding/:onboardingId/review" element={<ReviewCenterPage />} />
+          <Route path="onboarding/:onboardingId/configure" element={<ConfigurationBuilderPage />} />
           <Route path="runs" element={<RunsPage />} />
           <Route path="runs/:runId" element={<RunDetailPage />} />
           <Route path="quality" element={<QualityPage />} />
