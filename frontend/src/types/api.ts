@@ -195,3 +195,89 @@ export interface UploadOperation {
   preflight_result: PreflightResult | null;
   etl_run: OperationRunSummary | null;
 }
+
+export interface OnboardingCapability {
+  enabled: boolean;
+  source_types: ("csv" | "json" | "parquet")[];
+  supported_datatypes: string[];
+  reason: string | null;
+}
+
+export interface OnboardingProfileSummary {
+  rows_scanned: number | null;
+  rows_profiled: number | null;
+  exact_duplicate_count: number | null;
+  column_count: number;
+  possible_key_candidates: number;
+  required_decisions: number;
+  nested_structure_detected: boolean;
+}
+
+export interface OnboardingSession {
+  onboarding_id: string;
+  proposed_dataset_name: string;
+  source_type: "csv" | "json" | "parquet";
+  original_filename: string;
+  size_bytes: number;
+  sha256: string;
+  status: string;
+  uploaded_at: string;
+  profiled_at: string | null;
+  updated_at: string;
+  safe_error: string | null;
+  profile_summary: OnboardingProfileSummary | null;
+}
+
+export interface OnboardingField {
+  source_name: string;
+  canonical_name: string;
+  datatype: string;
+  nullable: boolean;
+  format: string | null;
+  confidence: string | null;
+  reason: string | null;
+  review_required: boolean;
+  review_resolved: boolean;
+  review_reasons: string[];
+  profile: {
+    null_percentage?: number;
+    distinct_count?: number;
+    cardinality_ratio?: number;
+    leading_zeros_detected?: boolean;
+    possible_key_candidate?: boolean;
+    observed_examples?: string[];
+  };
+  key_candidate: boolean;
+  key_decision: "accepted" | "rejected" | null;
+  editable: boolean;
+}
+
+export interface OnboardingReview {
+  onboarding_id: string;
+  dataset: string;
+  source_type: string;
+  original_filename: string;
+  size_bytes: number;
+  status: string;
+  rows_scanned: number | null;
+  rows_profiled: number | null;
+  exact_duplicate_count: number | null;
+  column_count: number;
+  nested_fields: string[];
+  fields: OnboardingField[];
+  unresolved: { kind: string; field: string; reason: string }[];
+  progress: { reviewed: number; total: number; remaining: number };
+  final_approved: false;
+}
+
+export interface DraftYAML {
+  onboarding_id: string;
+  yaml: string;
+}
+
+export interface SchemaDecision {
+  canonical_name: string;
+  datatype: string;
+  nullable: boolean;
+  format: string | null;
+}

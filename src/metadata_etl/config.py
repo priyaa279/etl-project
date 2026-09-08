@@ -203,7 +203,12 @@ def _validate_reviews(node: Any, path: str = "config") -> None:
             _validate_reviews(value, f"{path}[{index}]")
 
 
-def load_config(config_path: str | Path, *, require_source: bool = True) -> ETLConfig:
+def load_config(
+    config_path: str | Path,
+    *,
+    require_source: bool = True,
+    allow_unapproved: bool = False,
+) -> ETLConfig:
     path = Path(config_path).resolve()
     if not path.is_file():
         raise ConfigError(f"Config file does not exist: {path}")
@@ -220,7 +225,9 @@ def load_config(config_path: str | Path, *, require_source: bool = True) -> ETLC
 
     if "review" not in root:
         raise ConfigError("A top-level review section with explicit approval is required")
-    _validate_reviews(root)
+    _require_mapping(root.get("review"), "review")
+    if not allow_unapproved:
+        _validate_reviews(root)
 
     dataset_section = _require_mapping(root.get("dataset"), "dataset")
     dataset = _identifier(dataset_section.get("name"), "dataset.name")
@@ -382,7 +389,13 @@ def load_config(config_path: str | Path, *, require_source: bool = True) -> ETLC
         date_format = column.get("format")
         if date_format is not None:
             date_format = _require_string(date_format, f"columns.{canonical_name}.format")
-        if datatype == "date" and not date_format:
+        review_value = column.get("review")
+        pending_review = (
+            isinstance(review_value, dict)
+            and review_value.get("required") is True
+            and review_value.get("approved") is not True
+        )
+        if datatype == "date" and not date_format and not (allow_unapproved and pending_review):
             raise ConfigError(
                 f"columns.{canonical_name}.format is required; dates are never interpreted ambiguously"
             )

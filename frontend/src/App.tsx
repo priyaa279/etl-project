@@ -30,6 +30,15 @@ const WatermarksPage = lazy(() =>
 const UploadPage = lazy(() =>
   import("./pages/UploadPage").then((module) => ({ default: module.UploadPage })),
 );
+const OnboardingNewPage = lazy(() =>
+  import("./pages/OnboardingPage").then((module) => ({ default: module.OnboardingNewPage })),
+);
+const OnboardingSessionPage = lazy(() =>
+  import("./pages/OnboardingPage").then((module) => ({ default: module.OnboardingSessionPage })),
+);
+const ReviewCenterPage = lazy(() =>
+  import("./pages/ReviewCenterPage").then((module) => ({ default: module.ReviewCenterPage })),
+);
 
 export function App() {
   return (
@@ -40,6 +49,9 @@ export function App() {
           <Route path="datasets" element={<DatasetsPage />} />
           <Route path="datasets/:dataset" element={<DatasetDetailPage />} />
           <Route path="datasets/:dataset/upload" element={<UploadPage />} />
+          <Route path="onboarding/new" element={<OnboardingNewPage />} />
+          <Route path="onboarding/:onboardingId" element={<OnboardingSessionPage />} />
+          <Route path="onboarding/:onboardingId/review" element={<ReviewCenterPage />} />
           <Route path="runs" element={<RunsPage />} />
           <Route path="runs/:runId" element={<RunDetailPage />} />
           <Route path="quality" element={<QualityPage />} />

@@ -15,6 +15,10 @@ data/raw/*
 !data/raw/.gitkeep
 data/uploads/*
 !data/uploads/.gitkeep
+data/onboarding/*
+!data/onboarding/.gitkeep
+configs/drafts/*
+!configs/drafts/.gitkeep
 airflow/config/*
 !airflow/config/.gitkeep
 airflow/logs/*

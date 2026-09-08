@@ -9,6 +9,11 @@ import type {
   SchemaDriftEvent,
   WatermarkState,
   UploadOperation,
+  DraftYAML,
+  OnboardingCapability,
+  OnboardingReview,
+  OnboardingSession,
+  SchemaDecision,
 } from "../types/api";
 
 const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
@@ -77,6 +82,49 @@ export const api = {
     }),
   uploadStatus: (uploadId: string) =>
     request<UploadOperation>(`/api/uploads/${encodeURIComponent(uploadId)}`),
+  onboardingCapability: () => request<OnboardingCapability>("/api/onboarding/capability"),
+  createOnboarding: (datasetName: string, sourceType: string, file: File) => {
+    const body = new FormData();
+    body.append("dataset_name", datasetName);
+    body.append("source_type", sourceType);
+    body.append("file", file);
+    return request<OnboardingSession>("/api/onboarding", { method: "POST", body });
+  },
+  onboardingSession: (onboardingId: string) =>
+    request<OnboardingSession>(`/api/onboarding/${encodeURIComponent(onboardingId)}`),
+  profileOnboarding: (onboardingId: string) =>
+    request<OnboardingSession>(
+      `/api/onboarding/${encodeURIComponent(onboardingId)}/profile`,
+      { method: "POST" },
+    ),
+  onboardingReview: (onboardingId: string) =>
+    request<OnboardingReview>(
+      `/api/onboarding/${encodeURIComponent(onboardingId)}/review`,
+    ),
+  updateOnboardingSchema: (
+    onboardingId: string,
+    field: string,
+    decision: SchemaDecision,
+  ) =>
+    request<OnboardingReview>(
+      `/api/onboarding/${encodeURIComponent(onboardingId)}/schema/${encodeURIComponent(field)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(decision),
+      },
+    ),
+  saveKeyDecision: (onboardingId: string, field: string, decision: "accepted" | "rejected") =>
+    request<OnboardingReview>(
+      `/api/onboarding/${encodeURIComponent(onboardingId)}/key-decisions`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ field, decision }),
+      },
+    ),
+  onboardingYAML: (onboardingId: string) =>
+    request<DraftYAML>(`/api/onboarding/${encodeURIComponent(onboardingId)}/yaml`),
   datasetRuns: (dataset: string, limit = 20) =>
     request<RunDetail[]>(
       `/api/datasets/${encodeURIComponent(dataset)}/runs${query({ limit })}`,

@@ -42,6 +42,7 @@ def generate_starter_config(profile: DatasetProfile) -> dict[str, Any]:
                 "cardinality_ratio": column.cardinality_ratio,
                 "leading_zeros_detected": column.leading_zeros_detected,
                 "possible_key_candidate": column.possible_key_candidate,
+                "observed_examples": list(column.observed_examples),
             },
         }
         if column.inferred_type in {"date", "timestamp"}:
@@ -78,12 +79,17 @@ def generate_starter_config(profile: DatasetProfile) -> dict[str, Any]:
             "rows_profiled": profile.rows_profiled,
             "sample_size_requested": profile.sample_size_requested,
             "exact_duplicate_count": profile.exact_duplicate_count,
+            "nested_fields": list(profile.nested_fields),
             "note": "Duplicates are reported only; no deduplication is configured automatically.",
         },
         "source": {
-            "type": "csv",
+            "type": profile.source_type,
             "path": _source_display_path(profile.source_path),
-            "options": {"delimiter": profile.delimiter},
+            **(
+                {"options": {"delimiter": profile.delimiter}}
+                if profile.source_type == "csv"
+                else {}
+            ),
         },
         "runtime": {"raw_root": "data/raw"},
         "normalization": {

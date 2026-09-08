@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -181,3 +181,70 @@ class UploadOperation(BaseModel):
     safe_error: str | None = None
     preflight_result: dict[str, object] | None = None
     etl_run: OperationRunSummary | None = None
+
+
+class OnboardingCapability(BaseModel):
+    enabled: bool
+    source_types: list[str]
+    supported_datatypes: list[str]
+    reason: str | None
+
+
+class OnboardingProfileSummary(BaseModel):
+    rows_scanned: int | None
+    rows_profiled: int | None
+    exact_duplicate_count: int | None
+    column_count: int
+    possible_key_candidates: int
+    required_decisions: int
+    nested_structure_detected: bool
+
+
+class OnboardingSession(BaseModel):
+    onboarding_id: str
+    proposed_dataset_name: str
+    source_type: Literal["csv", "json", "parquet"]
+    original_filename: str
+    size_bytes: int
+    sha256: str
+    status: str
+    uploaded_at: datetime
+    profiled_at: datetime | None
+    updated_at: datetime
+    safe_error: str | None
+    profile_summary: OnboardingProfileSummary | None
+
+
+class SchemaDecision(BaseModel):
+    canonical_name: str
+    datatype: str
+    nullable: bool
+    format: str | None = None
+
+
+class KeyCandidateDecision(BaseModel):
+    field: str
+    decision: Literal["accepted", "rejected"]
+
+
+class OnboardingReview(BaseModel):
+    onboarding_id: str
+    dataset: str
+    source_type: str
+    original_filename: str
+    size_bytes: int
+    status: str
+    rows_scanned: int | None
+    rows_profiled: int | None
+    exact_duplicate_count: int | None
+    column_count: int
+    nested_fields: list[str]
+    fields: list[dict[str, Any]]
+    unresolved: list[dict[str, str]]
+    progress: dict[str, int]
+    final_approved: Literal[False]
+
+
+class DraftYAML(BaseModel):
+    onboarding_id: str
+    yaml: str

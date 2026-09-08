@@ -35,8 +35,8 @@ commands; its separate setup and smoke-test instructions appear below.
 
 ## Application UI
 
-Milestone 10B preserves the read-only monitoring application and adds a gated operation for an
-existing, approved file-based dataset:
+Milestone 10C.1 preserves the read-only monitoring application and existing-dataset operations
+while adding a separately gated first phase for completely new datasets:
 
 ```text
 Existing approved dataset -> upload -> preflight -> explicit run
@@ -44,15 +44,26 @@ Existing approved dataset -> upload -> preflight -> explicit run
         -> existing ETL CLI processes -> observability reports the exact run
 ```
 
+```text
+Completely new dataset -> upload -> profile -> draft YAML -> human schema review
+```
+
 The **ETL Control Center** includes Overview, Datasets, Runs, Data Quality, Schema Drift, and
 Watermarks pages, plus dataset and run detail views. Eligible Dataset Detail pages now link to
 **Upload new data**. PostgreSQL-source datasets clearly show that file upload is not applicable.
-There is no new-dataset or config-editing workflow.
+When enabled, **Onboard Dataset** is a separate action that creates only an unapproved draft and
+stops after schema/profiler review; it never schedules Airflow or starts ETL.
 
 Operational writes are disabled by default. Set `ETL_CONTROL_OPERATIONS_ENABLED=true` only in a
 trusted local environment, configure server-side Airflow authentication, and restart the API.
 The browser never receives PostgreSQL or Airflow credentials, server paths, raw records, or
 row-level quarantine values.
+
+New-dataset onboarding has its own `ETL_CONTROL_ONBOARDING_ENABLED=false` gate. Enable it only in a
+local/trusted environment until authentication and authorization are added. Uploads are stored in
+Git-ignored `data/onboarding`; generated YAML is stored in Git-ignored `configs/drafts`. Neither is
+served by the frontend. YAML remains the source of truth, while React provides the human-friendly
+review interface.
 
 The upload landing area is temporary application input, not ETL evidence. Once Airflow invokes the
 CLI with `--source-override`, the normal connector preserves a separate immutable raw artifact.
@@ -71,7 +82,7 @@ docker compose up -d --build
 - Airflow: `http://localhost:8080`
 
 For separate frontend/API development commands, endpoint details, privacy boundaries, and the
-10A/10B boundaries and the future 10C architecture, see
+10A, 10B, and 10C.1 boundaries, see
 [frontend architecture](docs/frontend_architecture.md).
 
 ## Portfolio proof
@@ -169,6 +180,19 @@ Spark, dbt, Kubernetes, Terraform, automatic schema migration, or automatic busi
 inference. Those belong to later milestones.
 
 ## Dataset onboarding flow
+
+The Control Center implements the first phase for CSV, JSON, and Parquet files:
+
+```text
+Upload -> existing profiler -> existing starter-config generator -> unapproved draft YAML
+       -> Understanding View / read-only YAML View -> persisted schema decisions
+```
+
+The profiler proposes. The human approves. The engine executes only approved configuration.
+Milestone 10C.1 intentionally stops before final approval. Transformations, quality contracts,
+load configuration, final approval, and the first ETL run are deferred to Milestone 10C.2.
+
+The existing CLI onboarding flow remains available:
 
 ```text
 new CSV
@@ -677,8 +701,9 @@ docker compose ps
 ```
 
 Airflow is available at `http://localhost:8080`. Its development Simple Auth Manager password is
-generated in the Git-ignored `airflow/config` directory. Configs are mounted read-only, while raw
-data, upload landing storage, and Airflow logs use host-mounted, Git-ignored runtime directories.
+generated in the Git-ignored `airflow/config` directory. Runnable configs are mounted read-only,
+while raw data, upload/onboarding landing storage, drafts, and Airflow logs use host-mounted,
+Git-ignored runtime directories.
 The API writes `data/uploads`; Airflow sees the same files read-only by convention through its
 existing `data` mount. Uploaded files are never served by Nginx. Manual containerized CLI
 usage remains available through the tools profile:
@@ -882,6 +907,7 @@ data/incoming/weather_readings.parquet embedded-schema source
 data/incoming/portfolio_orders.json nested e-commerce source
 data/incoming/portfolio_sensor_telemetry.parquet IoT source
 data/raw/                            run-scoped untouched copies (Git-ignored)
+data/onboarding/                     new-dataset source artifacts (Git-ignored)
 scripts/run_portfolio_demo.py       rerunnable public-CLI demonstration
 docs/dataset_independence.md        three-domain proof matrix and evidence
 docs/architecture.md                system flow, responsibilities, and principles

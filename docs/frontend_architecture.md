@@ -87,9 +87,43 @@ rejection while disabled; all 10A GET pages continue to work. Airflow URL, token
 password remain server-side. CORS stays allow-listed. This gate is for trusted/local development,
 not a replacement for authentication or authorization.
 
+## Milestone 10C.1: profile and review
+
+```text
+React onboarding flow
+  -> FastAPI onboarding application layer
+  -> existing profiler and starter-config generator
+  -> configs/drafts/<onboarding_id>.yaml
+  -> human-readable Review Center
+  -> validated schema decisions written back to the same YAML
+```
+
+`etl_app.onboarding_sessions` is separate from operational upload sessions and ETL run truth. Its
+states stop at `REVIEW_COMPLETE`; there is no approved, running, or successful state in 10C.1.
+Source bytes land under `data/onboarding/<onboarding_id>` using a server-generated UUID. Client
+filenames are metadata only, and API responses expose neither landing nor draft filesystem paths.
+
+`ETL_CONTROL_ONBOARDING_ENABLED` defaults to false independently of the 10B operations gate. When
+disabled, write endpoints return 403 and the navigation action is hidden. This gate is intended for
+local/trusted environments and is not a substitute for authentication or RBAC.
+
+The existing profiler is extended through format readers for CSV, JSON, and Parquet; every source
+feeds the same inference logic. Nested JSON is described and marked unresolved. The application
+does not guess relational normalization. Generated YAML is canonical and remains top-level
+`approved: false`; the API reloads and validates it after schema edits. Key-candidate accept/reject
+decisions are onboarding review metadata only and do not create load keys.
+
+The Review Center provides Overview, Review Required, Schema, key-candidate decisions, and a
+read-only view of the actual persisted YAML. It allows canonical name, supported datatype,
+nullable, and supported date/timestamp format decisions. A browser refresh reloads the session and
+draft from PostgreSQL and disk rather than relying on React memory.
+
+The profiler proposes. The human approves. The engine executes only approved configuration.
+
 ## Frontend composition
 
-The application uses one responsive shell and six navigation areas:
+The application uses one responsive shell and six permanent monitoring areas, plus the gated
+Onboard Dataset action:
 
 1. **Overview:** 24-hour run metrics, current dataset health, and recent runs.
 2. **Datasets:** searchable/filterable inventory and dataset detail.
@@ -125,6 +159,14 @@ add separate API methods and UI routes without changing these read-only contract
 | `POST /api/uploads/{upload_id}/validate` | run non-destructive preflight |
 | `POST /api/uploads/{upload_id}/run` | idempotently request the generic Airflow DAG |
 | `GET /api/uploads/{upload_id}` | monitor application, Airflow, and exact ETL state |
+| `GET /api/onboarding/capability` | onboarding gate and supported file/type choices |
+| `POST /api/onboarding` | create a new-dataset session and safely land one file |
+| `POST /api/onboarding/{id}/profile` | run the existing profiler and generate draft YAML |
+| `GET /api/onboarding/{id}` | resume durable onboarding state |
+| `GET /api/onboarding/{id}/review` | structured view of the authoritative draft |
+| `PATCH /api/onboarding/{id}/schema/{field}` | validate and persist one schema decision |
+| `POST /api/onboarding/{id}/key-decisions` | persist a non-semantic key suggestion decision |
+| `GET /api/onboarding/{id}/yaml` | return only that session's actual draft content |
 
 ## Local development
 
@@ -157,30 +199,15 @@ docker compose up -d --build
 The Docker frontend is available at `http://localhost:4173` and FastAPI at
 `http://localhost:8000/api/health`.
 
-## Future Milestone 10C boundary
+## Milestone 10C.2 boundary
 
 ```text
-New Dataset
-    |
-    v
-Upload
-    |
-    v
-Profiler
-    |
-    v
-Draft YAML
-    |
-    v
-Frontend Review Center
-    |
-    v
-Human decisions
-    |
-    v
-Validate -> Approve -> Approved YAML -> Airflow / ETL
+Reviewed draft -> configure transformations, contracts, load and drift policy
+               -> final validation and approval
+               -> approved YAML -> optional Airflow scheduling -> first ETL run
 ```
 
-The future editor must map to the existing YAML model rather than create a second configuration
-representation. None of this onboarding, draft configuration, editing, or approval flow is
-implemented in Milestone 10B.
+10C.1 does not expose final approval, move drafts into the runnable config directory, write Git,
+create DAGs, or run ETL. Those actions and the remaining configuration editors belong to 10C.2.
+Draft discard is also deferred so this phase does not introduce deletion semantics before
+authentication and the final approval lifecycle are defined.

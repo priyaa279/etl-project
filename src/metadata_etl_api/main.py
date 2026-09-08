@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -10,15 +10,23 @@ from metadata_etl_api.models import (
     DatasetSummary,
     DatasetUploadCapability,
     DatasetWatermarkResponse,
+    DraftYAML,
     HealthResponse,
+    KeyCandidateDecision,
+    OnboardingCapability,
+    OnboardingReview,
+    OnboardingSession,
     OverviewResponse,
     QualityOverview,
     QualitySummary,
     RunDetail,
+    SchemaDecision,
     SchemaDriftEvent,
     UploadOperation,
     WatermarkState,
 )
+from metadata_etl_api.onboarding_operations import OnboardingRepositoryError
+from metadata_etl_api.onboarding_service import OnboardingError, OnboardingService
 from metadata_etl_api.operations import OperationsError
 from metadata_etl_api.repository import ObservabilityRepository, RepositoryError
 from metadata_etl_api.settings import APISettings
@@ -44,6 +52,16 @@ def _upload_service(request: Request) -> UploadService:
 
 
 Uploads = Annotated[UploadService, Depends(_upload_service)]
+
+
+def _onboarding_service(request: Request) -> OnboardingService:
+    configured = getattr(request.app.state, "onboarding_service", None)
+    if configured is not None:
+        return configured
+    return OnboardingService.from_settings(request.app.state.settings)
+
+
+Onboarding = Annotated[OnboardingService, Depends(_onboarding_service)]
 RunStatusFilter = Literal["SUCCEEDED", "FAILED", "RUNNING"]
 LoadStrategyFilter = Literal["full", "incremental", "upsert", "scd2"]
 
@@ -52,18 +70,19 @@ def create_app() -> FastAPI:
     settings = APISettings.from_environment()
     application = FastAPI(
         title="ETL Control Center API",
-        description="ETL monitoring plus gated existing-dataset upload operations.",
-        version="10.1.0",
+        description="ETL monitoring plus gated data operations and onboarding review.",
+        version="10.2.0",
     )
     application.add_middleware(
         CORSMiddleware,
         allow_origins=list(settings.allowed_origins),
         allow_credentials=False,
-        allow_methods=["GET", "POST"],
+        allow_methods=["GET", "POST", "PATCH"],
         allow_headers=["Accept", "Content-Type"],
     )
     application.state.settings = settings
     application.state.upload_service = UploadService.from_settings(settings)
+    application.state.onboarding_service = OnboardingService.from_settings(settings)
 
     @application.exception_handler(RepositoryError)
     async def repository_error_handler(_request: Request, _exc: RepositoryError) -> JSONResponse:
@@ -81,6 +100,19 @@ def create_app() -> FastAPI:
         return JSONResponse(
             status_code=503,
             content={"detail": "Operational state is temporarily unavailable."},
+        )
+
+    @application.exception_handler(OnboardingError)
+    async def onboarding_error_handler(_request: Request, exc: OnboardingError) -> JSONResponse:
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+    @application.exception_handler(OnboardingRepositoryError)
+    async def onboarding_repository_error_handler(
+        _request: Request, _exc: OnboardingRepositoryError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Onboarding state is temporarily unavailable."},
         )
 
     @application.get("/api/health", response_model=HealthResponse, tags=["system"])
@@ -146,6 +178,85 @@ def create_app() -> FastAPI:
     )
     def upload_status(upload_id: str, uploads: Uploads) -> dict[str, object]:
         return uploads.get(upload_id)
+
+    @application.get(
+        "/api/onboarding/capability",
+        response_model=OnboardingCapability,
+        tags=["onboarding"],
+    )
+    def onboarding_capability(onboarding: Onboarding) -> dict[str, object]:
+        return onboarding.capability()
+
+    @application.post(
+        "/api/onboarding",
+        response_model=OnboardingSession,
+        status_code=201,
+        tags=["onboarding"],
+    )
+    async def create_onboarding(
+        onboarding: Onboarding,
+        dataset_name: Annotated[str, Form(...)],
+        source_type: Annotated[str, Form(...)],
+        file: Annotated[UploadFile, File(...)],
+    ) -> dict[str, object]:
+        return await onboarding.create(dataset_name, source_type, file)
+
+    @application.post(
+        "/api/onboarding/{onboarding_id}/profile",
+        response_model=OnboardingSession,
+        tags=["onboarding"],
+    )
+    def profile_onboarding(onboarding_id: str, onboarding: Onboarding) -> dict[str, object]:
+        return onboarding.profile(onboarding_id)
+
+    @application.get(
+        "/api/onboarding/{onboarding_id}",
+        response_model=OnboardingSession,
+        tags=["onboarding"],
+    )
+    def onboarding_status(onboarding_id: str, onboarding: Onboarding) -> dict[str, object]:
+        return onboarding.get(onboarding_id)
+
+    @application.get(
+        "/api/onboarding/{onboarding_id}/review",
+        response_model=OnboardingReview,
+        tags=["onboarding"],
+    )
+    def onboarding_review(onboarding_id: str, onboarding: Onboarding) -> dict[str, object]:
+        return onboarding.review(onboarding_id)
+
+    @application.patch(
+        "/api/onboarding/{onboarding_id}/schema/{field}",
+        response_model=OnboardingReview,
+        tags=["onboarding"],
+    )
+    def update_onboarding_schema(
+        onboarding_id: str,
+        field: str,
+        decision: SchemaDecision,
+        onboarding: Onboarding,
+    ) -> dict[str, object]:
+        return onboarding.update_schema(onboarding_id, field, decision.model_dump())
+
+    @application.post(
+        "/api/onboarding/{onboarding_id}/key-decisions",
+        response_model=OnboardingReview,
+        tags=["onboarding"],
+    )
+    def update_onboarding_key(
+        onboarding_id: str,
+        decision: KeyCandidateDecision,
+        onboarding: Onboarding,
+    ) -> dict[str, object]:
+        return onboarding.update_key_decision(onboarding_id, decision.field, decision.decision)
+
+    @application.get(
+        "/api/onboarding/{onboarding_id}/yaml",
+        response_model=DraftYAML,
+        tags=["onboarding"],
+    )
+    def onboarding_yaml(onboarding_id: str, onboarding: Onboarding) -> dict[str, str]:
+        return onboarding.yaml_content(onboarding_id)
 
     @application.get(
         "/api/datasets/{dataset}/runs", response_model=list[RunDetail], tags=["datasets"]

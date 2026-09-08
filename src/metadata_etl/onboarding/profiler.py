@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import re
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
@@ -9,6 +10,8 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from statistics import mean
 from typing import Any
+
+import duckdb
 
 from metadata_etl.errors import ProfilingError
 
@@ -21,6 +24,7 @@ YEAR_FIRST_DATE_PATTERN = re.compile(r"^\d{4}/\d{2}/\d{2}$")
 SLASH_DATE_PATTERN = re.compile(r"^(\d{1,2})/(\d{1,2})/(\d{4})$")
 ISO_TIMESTAMP_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}$")
 TRUE_FALSE_VALUES = {"true", "false"}
+OBSERVED_EXAMPLE_MAX_LENGTH = 120
 
 
 @dataclass(frozen=True)
@@ -51,6 +55,7 @@ class ColumnProfile:
     string_length_min: int | None
     string_length_max: int | None
     string_length_average: float | None
+    observed_examples: tuple[str, ...]
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -66,6 +71,8 @@ class DatasetProfile:
     rows_profiled: int
     exact_duplicate_count: int
     columns: tuple[ColumnProfile, ...]
+    source_type: str = "csv"
+    nested_fields: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         result = asdict(self)
@@ -189,13 +196,47 @@ def _numeric_bounds(values: list[str], inferred_type: str) -> tuple[str | None, 
     return format(min(numbers), "f"), format(max(numbers), "f")
 
 
+def _bounded_observation(value: str) -> str:
+    if len(value) <= OBSERVED_EXAMPLE_MAX_LENGTH:
+        return value
+    return f"{value[: OBSERVED_EXAMPLE_MAX_LENGTH - 1]}…"
+
+
+def _nested_observation(value: str) -> str:
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return "nested value"
+    if isinstance(parsed, dict):
+        count = len(parsed)
+        return f"object ({count} field{'s' if count != 1 else ''})"
+    if isinstance(parsed, list):
+        count = len(parsed)
+        noun = "item" if count == 1 else "items"
+        element_type = (
+            "object" if parsed and all(isinstance(item, dict) for item in parsed) else "value"
+        )
+        return f"array ({count} {noun}; {element_type} elements)"
+    return "nested value"
+
+
 def _profile_column(
-    source_name: str, canonical: str, values: list[str], rows_profiled: int
+    source_name: str,
+    canonical: str,
+    values: list[str],
+    rows_profiled: int,
+    *,
+    nested: bool = False,
 ) -> ColumnProfile:
     possible_null_tokens = _observed_null_tokens(values)
     non_null_values = [value.strip() for value in values if not _is_null(value)]
     null_count = rows_profiled - len(non_null_values)
     inferred_type, inferred_format, inference, inference_review = _infer_type(non_null_values)
+    if nested:
+        inferred_type = "string"
+        inferred_format = None
+        inference = Inference("low", "nested_structure_requires_explicit_normalization")
+        inference_review = True
     distinct_count = len(set(non_null_values))
     possible_key = bool(rows_profiled) and null_count == 0 and distinct_count == rows_profiled
     review_reasons: list[str] = []
@@ -230,6 +271,51 @@ def _profile_column(
         string_length_min=min(lengths) if lengths else None,
         string_length_max=max(lengths) if lengths else None,
         string_length_average=round(mean(lengths), 4) if lengths else None,
+        observed_examples=tuple(
+            dict.fromkeys(
+                _nested_observation(value) if nested else _bounded_observation(value)
+                for value in non_null_values
+            )
+        )[:5],
+    )
+
+
+def _dataset_profile(
+    path: Path,
+    *,
+    source_type: str,
+    headers: list[str],
+    sampled_rows: list[list[str]],
+    rows_scanned: int,
+    exact_duplicate_count: int,
+    sample_size: int,
+    delimiter: str = ",",
+    nested_fields: set[str] | None = None,
+) -> DatasetProfile:
+    canonical_names = _unique_canonical_names(headers)
+    rows_profiled = len(sampled_rows)
+    nested_fields = nested_fields or set()
+    columns = tuple(
+        _profile_column(
+            source_name,
+            canonical,
+            [row[index] for row in sampled_rows],
+            rows_profiled,
+            nested=source_name in nested_fields,
+        )
+        for index, (source_name, canonical) in enumerate(zip(headers, canonical_names, strict=True))
+    )
+    return DatasetProfile(
+        source_path=path,
+        dataset_name=canonical_name(path.stem, fallback="dataset"),
+        delimiter=delimiter,
+        sample_size_requested=sample_size,
+        rows_scanned=rows_scanned,
+        rows_profiled=rows_profiled,
+        exact_duplicate_count=exact_duplicate_count,
+        columns=columns,
+        source_type=source_type,
+        nested_fields=tuple(sorted(nested_fields)),
     )
 
 
@@ -272,24 +358,112 @@ def profile_csv(
     except (OSError, UnicodeError, csv.Error) as exc:
         raise ProfilingError(f"Could not profile CSV source {path}: {exc}") from exc
 
-    canonical_names = _unique_canonical_names(headers)
-    rows_profiled = len(sampled_rows)
-    columns = tuple(
-        _profile_column(
-            source_name,
-            canonical,
-            [row[index] for row in sampled_rows],
-            rows_profiled,
-        )
-        for index, (source_name, canonical) in enumerate(zip(headers, canonical_names, strict=True))
-    )
-    return DatasetProfile(
-        source_path=path,
-        dataset_name=canonical_name(path.stem, fallback="dataset"),
-        delimiter=delimiter,
-        sample_size_requested=sample_size,
+    return _dataset_profile(
+        path,
+        source_type="csv",
+        headers=headers,
+        sampled_rows=sampled_rows,
         rows_scanned=rows_scanned,
-        rows_profiled=rows_profiled,
         exact_duplicate_count=exact_duplicate_count,
-        columns=columns,
+        sample_size=sample_size,
+        delimiter=delimiter,
     )
+
+
+def _json_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return str(value).lower()
+    if isinstance(value, dict | list):
+        return json.dumps(value, sort_keys=True, separators=(",", ":"))
+    return str(value)
+
+
+def profile_json(source_path: str | Path, *, sample_size: int = 10_000) -> DatasetProfile:
+    path = Path(source_path).resolve()
+    if not path.is_file():
+        raise ProfilingError(f"JSON source does not exist: {path}")
+    if sample_size <= 0:
+        raise ProfilingError("sample_size must be greater than zero")
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            payload = [json.loads(line) for line in text.splitlines() if line.strip()]
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ProfilingError("The JSON source could not be parsed.") from exc
+    records = [payload] if isinstance(payload, dict) else payload
+    if (
+        not isinstance(records, list)
+        or not records
+        or not all(isinstance(record, dict) for record in records)
+    ):
+        raise ProfilingError("JSON root must be an object or a non-empty array of objects")
+    headers = list(dict.fromkeys(key for record in records for key in record))
+    if not headers:
+        raise ProfilingError("JSON source does not contain fields")
+    nested_fields = {
+        key for record in records for key, value in record.items() if isinstance(value, dict | list)
+    }
+    rows = [[_json_value(record.get(header)) for header in headers] for record in records]
+    keys = [tuple(row) for row in rows]
+    return _dataset_profile(
+        path,
+        source_type="json",
+        headers=headers,
+        sampled_rows=rows[:sample_size],
+        rows_scanned=len(rows),
+        exact_duplicate_count=len(keys) - len(set(keys)),
+        sample_size=sample_size,
+        nested_fields=nested_fields,
+    )
+
+
+def profile_parquet(source_path: str | Path, *, sample_size: int = 10_000) -> DatasetProfile:
+    path = Path(source_path).resolve()
+    if not path.is_file():
+        raise ProfilingError(f"Parquet source does not exist: {path}")
+    if sample_size <= 0:
+        raise ProfilingError("sample_size must be greater than zero")
+    try:
+        with duckdb.connect(":memory:") as connection:
+            relation = connection.execute(
+                "SELECT * FROM read_parquet(?) LIMIT ?", [str(path), sample_size]
+            )
+            headers = [item[0] for item in relation.description]
+            values = relation.fetchall()
+            rows_scanned = connection.execute(
+                "SELECT count(*) FROM read_parquet(?)", [str(path)]
+            ).fetchone()[0]
+            distinct_rows = connection.execute(
+                "SELECT count(*) FROM (SELECT DISTINCT * FROM read_parquet(?))", [str(path)]
+            ).fetchone()[0]
+    except (duckdb.Error, OSError) as exc:
+        raise ProfilingError("The Parquet source could not be profiled.") from exc
+    rows = [[_json_value(value) for value in row] for row in values]
+    return _dataset_profile(
+        path,
+        source_type="parquet",
+        headers=headers,
+        sampled_rows=rows,
+        rows_scanned=int(rows_scanned),
+        exact_duplicate_count=int(rows_scanned - distinct_rows),
+        sample_size=sample_size,
+    )
+
+
+def profile_file(
+    source_path: str | Path, source_type: str, *, sample_size: int = 10_000
+) -> DatasetProfile:
+    profilers = {
+        "csv": profile_csv,
+        "json": profile_json,
+        "parquet": profile_parquet,
+    }
+    try:
+        profiler = profilers[source_type]
+    except KeyError as exc:
+        raise ProfilingError(f"Unsupported profiling source type: {source_type}") from exc
+    return profiler(source_path, sample_size=sample_size)

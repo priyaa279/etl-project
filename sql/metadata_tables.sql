@@ -95,6 +95,30 @@ CREATE TABLE IF NOT EXISTS etl_app.upload_sessions (
 CREATE INDEX IF NOT EXISTS upload_sessions_dataset_uploaded_idx
     ON etl_app.upload_sessions (dataset, uploaded_at DESC);
 
+CREATE TABLE IF NOT EXISTS etl_app.onboarding_sessions (
+    onboarding_id TEXT PRIMARY KEY,
+    proposed_dataset_name TEXT NOT NULL UNIQUE,
+    source_type TEXT NOT NULL CHECK (source_type IN ('csv', 'json', 'parquet')),
+    original_filename TEXT NOT NULL,
+    size_bytes BIGINT NOT NULL,
+    sha256 TEXT NOT NULL,
+    landing_key TEXT NOT NULL UNIQUE,
+    draft_key TEXT UNIQUE,
+    status TEXT NOT NULL CHECK (status IN (
+        'UPLOADED', 'PROFILING', 'NEEDS_REVIEW',
+        'REVIEW_IN_PROGRESS', 'REVIEW_COMPLETE', 'FAILED'
+    )),
+    uploaded_at TIMESTAMPTZ NOT NULL,
+    profiled_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL,
+    profile_result JSONB,
+    key_decisions JSONB NOT NULL DEFAULT '{}'::jsonb,
+    safe_error TEXT
+);
+
+CREATE INDEX IF NOT EXISTS onboarding_sessions_updated_idx
+    ON etl_app.onboarding_sessions (updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS etl_meta.data_quality_results (
     run_id TEXT NOT NULL,
     dataset TEXT NOT NULL,

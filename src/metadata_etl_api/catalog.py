@@ -43,6 +43,15 @@ class DatasetCatalog:
             return matches[0]
         raise CatalogError("Dataset configuration is ambiguous.")
 
+    def contains(self, dataset: str) -> bool:
+        for path in sorted(self.config_dir.glob("*.yaml")):
+            try:
+                if load_config(path, require_source=False).dataset == dataset:
+                    return True
+            except ConfigError:
+                continue
+        return False
+
     def capability(self, dataset: str) -> DatasetCapability:
         config = self.get(dataset)
         if config.source_type == "postgres":

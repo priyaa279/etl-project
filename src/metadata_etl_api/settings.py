@@ -25,6 +25,9 @@ class APISettings:
     airflow_username: str | None
     airflow_password: str | None
     airflow_token: str | None
+    onboarding_enabled: bool = False
+    onboarding_root: Path = Path("data/onboarding")
+    draft_config_dir: Path = Path("configs/drafts")
 
     @classmethod
     def from_environment(cls) -> APISettings:
@@ -53,4 +56,7 @@ class APISettings:
             airflow_username=os.getenv("AIRFLOW_API_USERNAME"),
             airflow_password=os.getenv("AIRFLOW_API_PASSWORD"),
             airflow_token=os.getenv("AIRFLOW_API_TOKEN"),
+            onboarding_enabled=_boolean("ETL_CONTROL_ONBOARDING_ENABLED"),
+            onboarding_root=Path(os.getenv("ETL_ONBOARDING_ROOT", "data/onboarding")),
+            draft_config_dir=Path(os.getenv("ETL_DRAFT_CONFIG_DIR", "configs/drafts")),
         )

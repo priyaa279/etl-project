@@ -5,8 +5,12 @@ import {
   Gauge,
   GitCompareArrows,
   ListChecks,
+  Sparkles,
 } from "lucide-react";
+import { useCallback } from "react";
 import { NavLink, Outlet } from "react-router-dom";
+import { api } from "../api/client";
+import { useApi } from "../hooks/useApi";
 
 const navigation = [
   { to: "/", label: "Overview", icon: Gauge, end: true },
@@ -18,6 +22,8 @@ const navigation = [
 ];
 
 export function AppShell() {
+  const capabilityLoader = useCallback(() => api.onboardingCapability(), []);
+  const onboarding = useApi(capabilityLoader);
   return (
     <div className="min-h-screen bg-slate-100 text-slate-900">
       <a href="#main-content" className="skip-link">
@@ -31,7 +37,7 @@ export function AppShell() {
           </span>
           <div className="min-w-0">
             <p className="truncate font-bold tracking-tight text-white">ETL Control Center</p>
-            <p className="text-xs font-medium text-slate-400">Read-only operations</p>
+            <p className="text-xs font-medium text-slate-400">Monitoring &amp; review</p>
           </div>
         </div>
 
@@ -47,6 +53,15 @@ export function AppShell() {
               <span>{label}</span>
             </NavLink>
           ))}
+          {onboarding.data?.enabled && (
+            <NavLink
+              to="/onboarding/new"
+              className={({ isActive }) => `nav-link ${isActive ? "nav-link-active" : ""}`}
+            >
+              <Sparkles className="h-4 w-4 shrink-0" aria-hidden="true" />
+              <span>Onboard Dataset</span>
+            </NavLink>
+          )}
         </nav>
 
         <div className="mt-auto hidden px-5 pb-6 lg:block">
@@ -55,7 +70,7 @@ export function AppShell() {
               <span className="h-2 w-2 rounded-full bg-emerald-400" />
               LOCAL ENVIRONMENT
             </div>
-            <p className="mt-2 text-xs leading-5 text-slate-500">Operational metadata only</p>
+            <p className="mt-2 text-xs leading-5 text-slate-500">Metadata and gated operations</p>
           </div>
         </div>
       </aside>

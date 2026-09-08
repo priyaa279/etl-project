@@ -21,14 +21,16 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
 button,
 a,
 input,
-select {
+select,
+textarea {
   outline-offset: 3px;
 }
 
@@ -37,6 +39,20 @@ a:focus-visible,
 input:focus-visible,
 select:focus-visible {
   outline: 2px solid #0891b2;
+}
+
+.field-label {
+  display: grid;
+  gap: 0.45rem;
+  color: #334155;
+  font-size: 0.85rem;
+  font-weight: 750;
+}
+
+.field-label > span {
+  color: #64748b;
+  font-size: 0.75rem;
+  font-weight: 500;
 }
 
 .sidebar {
@@ -271,6 +287,110 @@ select:focus-visible {
   padding: 1rem;
   color: #0c4a6e;
   font-size: 0.9rem;
+}
+
+.warning-panel,
+.success-panel {
+  border: 1px solid #fde68a;
+  border-radius: 0.75rem;
+  background: #fffbeb;
+  padding: 0.85rem 1rem;
+  color: #92400e;
+  font-size: 0.875rem;
+  font-weight: 650;
+}
+
+.success-panel {
+  border-color: #a7f3d0;
+  background: #ecfdf5;
+  color: #065f46;
+}
+
+.schema-card {
+  scroll-margin-top: 2rem;
+  border: 1px solid #dbe3ed;
+  border-radius: 0.9rem;
+  background: white;
+  padding: 1.25rem;
+  box-shadow: 0 1px 2px rgb(15 23 42 / 0.04);
+}
+
+.schema-card:focus {
+  outline: 2px solid #0891b2;
+}
+
+.example-chip {
+  border: 1px solid #dbe3ed;
+  border-radius: 0.4rem;
+  background: #f8fafc;
+  padding: 0.3rem 0.5rem;
+  color: #334155;
+  font-size: 0.75rem;
+}
+
+.key-candidate {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border: 1px solid #bae6fd;
+  border-radius: 0.75rem;
+  background: #f0f9ff;
+  padding: 1rem;
+}
+
+.review-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  border: 0;
+  border-radius: 0.55rem;
+  background: transparent;
+  padding: 0.6rem 0.85rem;
+  color: #64748b;
+  font-size: 0.875rem;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.review-tab-active {
+  background: #0f172a;
+  color: white;
+}
+
+.review-list {
+  display: grid;
+  gap: 0.55rem;
+  padding: 0;
+  list-style: none;
+}
+
+.review-list a {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  border-radius: 0.6rem;
+  padding: 0.65rem;
+  color: #92400e;
+  text-decoration: none;
+}
+
+.review-list a:hover {
+  background: #fffbeb;
+}
+
+.yaml-preview {
+  max-height: 42rem;
+  overflow: auto;
+  border-radius: 0.75rem;
+  background: #0f172a;
+  padding: 1.25rem;
+  color: #dbeafe;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 0.78rem;
+  line-height: 1.65;
+  white-space: pre-wrap;
 }
 
 .blocked-panel {
