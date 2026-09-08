@@ -98,6 +98,21 @@ def test_new_enabled_config_is_discovered_without_dag_code_changes(
     assert [item.dag_id for item in discovered] == ["etl_new_domain"]
 
 
+def test_enabled_config_without_schedule_is_discovered_for_on_demand_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(ROOT)
+    path = _write_config(tmp_path, dataset="on_demand", enabled=True)
+    config = yaml.safe_load(path.read_text(encoding="utf-8"))
+    config["orchestration"]["schedule"] = None
+    path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+    discovered = discover_scheduled_configs(tmp_path)
+
+    assert discovered[0].dag_id == "etl_on_demand"
+    assert discovered[0].schedule is None
+
+
 def test_airflow_cli_runner_propagates_nonzero_status(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -138,6 +153,23 @@ def test_airflow_cli_runner_passes_optional_upload_context(
         "--correlation-id",
         "upload-123",
     ]
+
+
+def test_airflow_cli_runner_injects_approval_commit_for_ledger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _write_config(tmp_path, dataset="approved_data", enabled=True)
+    captured: dict[str, object] = {}
+
+    def capture(command: list[str], **values: object) -> None:
+        captured.update(command=command, **values)
+
+    monkeypatch.setattr(subprocess, "run", capture)
+    run_cli_stage("run", config, correlation_id="approval-1", git_commit_sha="b" * 40)
+
+    environment = captured["env"]
+    assert isinstance(environment, dict)
+    assert environment["ETL_GIT_COMMIT_SHA"] == "b" * 40
 
 
 def test_validate_all_checks_top_level_configs_and_ignores_drafts(

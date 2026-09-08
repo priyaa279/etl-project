@@ -17,6 +17,7 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+  overflow-x: hidden;
 }
 
 button,
@@ -99,7 +100,9 @@ select:focus-visible {
 }
 
 .main-content {
+  min-width: 0;
   min-height: 100vh;
+  overflow-x: hidden;
   padding: 9rem 1.25rem 3rem;
 }
 

@@ -122,6 +122,7 @@ const configuration: OnboardingConfiguration = {
   status: "CONFIGURING",
   review_complete: true,
   normalization_complete: true,
+  activation_ready: true,
   columns: [
     { name: "student_id", source: "Student ID", datatype: "string", nullable: false, format: null, classification: null, quarantine_value: "none" },
     { name: "enrolled_on", source: "Enrolled On", datatype: "date", nullable: false, format: "%Y-%m-%d", classification: null, quarantine_value: "none" },
@@ -136,8 +137,19 @@ const configuration: OnboardingConfiguration = {
   contracts: [],
   load: { strategy: "full", connection_env: "ETL_POSTGRES_DSN", schema: "public", staging_table: "course_enrollments_staging", target_table: "course_enrollments" },
   schema_drift: { added_columns: "warn", removed_columns: "fail", datatype_change: "fail", canonical_change: "fail", raw_structure_change: "warn" },
+  orchestration: { enabled: true, schedule: null, retries: 0, retry_delay_minutes: 5 },
   validation: { result: "NOT_VALIDATED", draft_hash: "a".repeat(64), validated_hash: null, validated_at: null, errors: [] },
   final_approved: false,
+  approval: {
+    approved_at: null,
+    approved_by: null,
+    validation_hash: null,
+    approved_config_hash: null,
+    git_commit_sha: null,
+    git_push_status: null,
+    dag_id: null,
+    activation_checked_at: null,
+  },
 };
 
 afterEach(() => vi.restoreAllMocks());
@@ -333,7 +345,7 @@ it("shows load-specific fields without silently applying accepted key suggestion
   expect(update).toHaveBeenCalledWith("onboarding-123", { strategy: "upsert", keys: ["student_id"] });
 });
 
-it("shows actionable validation results and never offers final approval", async () => {
+it("shows actionable validation results and blocks final approval", async () => {
   const user = userEvent.setup();
   const invalid = { ...configuration, status: "VALIDATION_FAILED", validation: { ...configuration.validation, result: "INVALID" as const, validated_hash: configuration.validation.draft_hash, errors: [{ section: "load", message: "Incremental load requires a watermark." }] } };
   vi.spyOn(api, "onboardingConfiguration").mockResolvedValue(configuration);
@@ -342,8 +354,74 @@ it("shows actionable validation results and never offers final approval", async 
 
   await user.click(await screen.findByRole("button", { name: "Validate configuration" }));
   expect(await screen.findByText(/Incremental load requires a watermark/)).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: /Approve Dataset/ })).not.toBeInTheDocument();
-  expect(screen.getByText(/No approval or pipeline run/)).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Review final approval" })).toBeDisabled();
+  expect(screen.getByText(/successful validation is required/)).toBeInTheDocument();
+});
+
+it("requires acknowledgment and a second confirmation before exact-hash approval", async () => {
+  const user = userEvent.setup();
+  const ready = {
+    ...configuration,
+    status: "READY_FOR_APPROVAL",
+    validation: {
+      ...configuration.validation,
+      result: "VALID" as const,
+      validated_hash: configuration.validation.draft_hash,
+    },
+  };
+  const approved = {
+    ...ready,
+    status: "READY_FOR_FIRST_RUN",
+    final_approved: true,
+    approval: {
+      approved_at: "2026-09-07T12:00:00Z",
+      approved_by: "Priya A",
+      validation_hash: ready.validation.draft_hash,
+      approved_config_hash: "b".repeat(64),
+      git_commit_sha: "c".repeat(40),
+      git_push_status: "DISABLED",
+      dag_id: "etl_course_enrollments",
+      activation_checked_at: "2026-09-07T12:00:01Z",
+    },
+  };
+  const completion = {
+    onboarding_id: "onboarding-123",
+    dataset: "course_enrollments",
+    status: "READY_FOR_FIRST_RUN",
+    safe_error: null,
+    approval: approved.approval,
+    first_run: {
+      attempt: 0,
+      correlation_id: null,
+      airflow_dag_id: "etl_course_enrollments",
+      airflow_run_id: null,
+      airflow_state: null,
+      etl_run_id: null,
+      completed_at: null,
+      etl_run: null,
+    },
+  };
+  vi.spyOn(api, "onboardingConfiguration").mockResolvedValueOnce(ready).mockResolvedValue(approved);
+  vi.spyOn(api, "onboardingCompletion").mockResolvedValue(completion);
+  const approve = vi.spyOn(api, "approveOnboarding").mockResolvedValue(completion);
+  const run = vi.spyOn(api, "runOnboardingFirst").mockResolvedValue({ ...completion, status: "QUEUED" });
+  renderRoute(<ConfigurationBuilderPage />, "/onboarding/onboarding-123/configure", "/onboarding/:onboardingId/configure");
+
+  const reviewApproval = await screen.findByRole("button", { name: "Review final approval" });
+  expect(reviewApproval).toBeDisabled();
+  await user.type(screen.getByLabelText("Approved by"), "Priya A");
+  await user.click(screen.getByRole("checkbox"));
+  await user.click(reviewApproval);
+  expect(approve).not.toHaveBeenCalled();
+  await user.click(screen.getByRole("button", { name: "Confirm and approve" }));
+  expect(approve).toHaveBeenCalledWith("onboarding-123", {
+    expected_hash: ready.validation.draft_hash,
+    approved_by: "Priya A",
+    acknowledged: true,
+  });
+  expect(run).not.toHaveBeenCalled();
+  await user.click(await screen.findByRole("button", { name: "Run first ETL load" }));
+  expect(run).toHaveBeenCalledWith("onboarding-123", false);
 });
 
 it("requires explicit nested JSON normalization before later configuration", async () => {

@@ -28,6 +28,16 @@ class APISettings:
     onboarding_enabled: bool = False
     onboarding_root: Path = Path("data/onboarding")
     draft_config_dir: Path = Path("configs/drafts")
+    repository_root: Path = Path(".")
+    approved_source_root: Path = Path("data/sources")
+    approved_source_config_root: str = "data/sources"
+    airflow_source_root: str = "/opt/airflow/data/sources"
+    airflow_discovery_timeout_seconds: float = 20.0
+    airflow_discovery_poll_seconds: float = 1.0
+    git_executable: str = "git"
+    git_push_enabled: bool = False
+    git_remote: str = "origin"
+    git_branch: str = "main"
 
     @classmethod
     def from_environment(cls) -> APISettings:
@@ -59,4 +69,20 @@ class APISettings:
             onboarding_enabled=_boolean("ETL_CONTROL_ONBOARDING_ENABLED"),
             onboarding_root=Path(os.getenv("ETL_ONBOARDING_ROOT", "data/onboarding")),
             draft_config_dir=Path(os.getenv("ETL_DRAFT_CONFIG_DIR", "configs/drafts")),
+            repository_root=Path(os.getenv("ETL_REPOSITORY_ROOT", ".")),
+            approved_source_root=Path(os.getenv("ETL_APPROVED_SOURCE_ROOT", "data/sources")),
+            approved_source_config_root=os.getenv(
+                "ETL_APPROVED_SOURCE_CONFIG_ROOT", "data/sources"
+            ).strip("/"),
+            airflow_source_root=os.getenv("ETL_AIRFLOW_SOURCE_ROOT", "/opt/airflow/data/sources"),
+            airflow_discovery_timeout_seconds=float(
+                os.getenv("ETL_AIRFLOW_DISCOVERY_TIMEOUT_SECONDS", "20")
+            ),
+            airflow_discovery_poll_seconds=float(
+                os.getenv("ETL_AIRFLOW_DISCOVERY_POLL_SECONDS", "1")
+            ),
+            git_executable=os.getenv("ETL_GIT_EXECUTABLE", "git"),
+            git_push_enabled=_boolean("ETL_CONTROL_GIT_PUSH_ENABLED"),
+            git_remote=os.getenv("ETL_GIT_REMOTE", "origin"),
+            git_branch=os.getenv("ETL_GIT_BRANCH", "main"),
         )

@@ -5,6 +5,7 @@ from pathlib import Path
 
 from metadata_etl.config import ETLConfig, load_config
 from metadata_etl.errors import ConfigError
+from metadata_etl.orchestration import dag_id_for_dataset
 
 
 class CatalogError(RuntimeError):
@@ -76,4 +77,4 @@ class DatasetCatalog:
     def dag_id(config: ETLConfig) -> str:
         if not config.orchestration.enabled:
             raise CatalogError("Control Center execution is not enabled for this dataset.")
-        return f"etl_{config.dataset}"
+        return dag_id_for_dataset(config.dataset)

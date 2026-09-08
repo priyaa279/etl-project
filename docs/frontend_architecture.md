@@ -236,9 +236,45 @@ Additional onboarding endpoints:
 | `PATCH /api/onboarding/{id}/schema-drift` | persist current drift keys and actions |
 | `POST /api/onboarding/{id}/validate` | validate without approving or running |
 
-## Milestone 10C.2B boundary
+## Milestone 10C.2B: approval, activation, and first run
 
-10C.2A does not expose final approval, move drafts into the runnable config directory, write Git,
-create DAGs, or run ETL. Approval, promotion, optional scheduling, and first execution belong to
-10C.2B. Draft discard is also deferred so this phase does not introduce deletion semantics before
-authentication and the final approval lifecycle are defined.
+```text
+READY_FOR_APPROVAL + expected SHA-256 + acknowledgment + approved_by
+  -> PostgreSQL approval claim/lock
+  -> stable ignored source materialization
+  -> strict approved-config validation
+  -> atomic configs/<dataset>.yaml promotion
+  -> restricted one-file Git commit
+  -> generic Airflow DAG discovery
+  -> READY_FOR_FIRST_RUN
+  -> explicit trigger with exact correlation ID
+  -> ledger-backed completion
+```
+
+Validation identity and approved-config identity are intentionally separate because adding the
+approval metadata changes YAML bytes. PostgreSQL records both hashes, the approver and timestamp,
+Git SHA/push result, DAG ID, first-run correlation and Airflow IDs, ETL run ID, and completion
+state. The top-level approved config becomes canonical and the ignored draft is archived. Every
+draft-edit endpoint becomes read-only after approval.
+
+The Git adapter has a fixed repository root and executes argument arrays with `shell=False`. It
+requires a clean project tree and stages only the exact top-level config. Its deterministic commit
+message is `Approve dataset configuration: <dataset>`. Push is independently gated off by default
+and, if enabled, is restricted to the configured remote and branch. No browser-provided Git
+command, path, remote, or branch is accepted.
+
+Approved configs use the existing discovery helper and `etl_<dataset>` naming function. A null
+schedule means on-demand activation; it does not create a recurring schedule. Discovery timeout
+leaves the config approved and exposes a retry. Approval never starts ETL. The first-run trigger
+uses the existing Airflow client and generic CLI path, including the approval commit SHA and one
+exact correlation identifier. Status resolution queries that correlation identifier rather than
+guessing the latest dataset run. First-run failure preserves approval and allows an explicit retry.
+
+Additional endpoints:
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /api/onboarding/{id}/approve` | hash-bound human approval, promotion, and versioning |
+| `POST /api/onboarding/{id}/activate` | retry exact generic-DAG discovery |
+| `POST /api/onboarding/{id}/first-run` | explicitly trigger or retry the first run |
+| `GET /api/onboarding/{id}/completion` | resume exact approval, Airflow, and ETL state |

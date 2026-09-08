@@ -17,6 +17,8 @@ data/uploads/*
 !data/uploads/.gitkeep
 data/onboarding/*
 !data/onboarding/.gitkeep
+data/sources/*
+!data/sources/.gitkeep
 configs/drafts/*
 !configs/drafts/.gitkeep
 airflow/config/*

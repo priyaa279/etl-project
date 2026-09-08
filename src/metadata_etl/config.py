@@ -239,8 +239,6 @@ def load_config(
     orchestration_schedule = orchestration_value.get("schedule")
     if orchestration_schedule is not None:
         orchestration_schedule = _require_string(orchestration_schedule, "orchestration.schedule")
-    if orchestration_enabled and orchestration_schedule is None:
-        raise ConfigError("orchestration.schedule is required when orchestration is enabled")
     orchestration_retries = orchestration_value.get("retries", 0)
     if (
         not isinstance(orchestration_retries, int)

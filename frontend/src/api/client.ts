@@ -12,6 +12,7 @@ import type {
   DraftYAML,
   OnboardingCapability,
   OnboardingConfiguration,
+  OnboardingCompletion,
   OnboardingReview,
   OnboardingSession,
   SchemaDecision,
@@ -193,6 +194,24 @@ export const api = {
       `/api/onboarding/${encodeURIComponent(onboardingId)}/validate`,
       { method: "POST" },
     ),
+  approveOnboarding: (
+    onboardingId: string,
+    value: { expected_hash: string; approved_by: string; acknowledged: boolean },
+  ) => request<OnboardingCompletion>(
+    `/api/onboarding/${encodeURIComponent(onboardingId)}/approve`,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(value) },
+  ),
+  activateOnboarding: (onboardingId: string) => request<OnboardingCompletion>(
+    `/api/onboarding/${encodeURIComponent(onboardingId)}/activate`,
+    { method: "POST" },
+  ),
+  runOnboardingFirst: (onboardingId: string, retry = false) => request<OnboardingCompletion>(
+    `/api/onboarding/${encodeURIComponent(onboardingId)}/first-run`,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ retry }) },
+  ),
+  onboardingCompletion: (onboardingId: string) => request<OnboardingCompletion>(
+    `/api/onboarding/${encodeURIComponent(onboardingId)}/completion`,
+  ),
   datasetRuns: (dataset: string, limit = 20) =>
     request<RunDetail[]>(
       `/api/datasets/${encodeURIComponent(dataset)}/runs${query({ limit })}`,

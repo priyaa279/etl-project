@@ -38,6 +38,7 @@ def test_airflow_3_client_uses_token_and_stable_v2_dag_run_api(monkeypatch: Any)
         "upload__123",
         source_override="/opt/airflow/data/uploads/customers/123/artifact.csv",
         correlation_id="123",
+        git_commit_sha="a" * 40,
     )
 
     assert response["state"] == "queued"
@@ -47,4 +48,5 @@ def test_airflow_3_client_uses_token_and_stable_v2_dag_run_api(monkeypatch: Any)
     payload = json.loads(requests[1].data)
     assert payload["logical_date"] is None
     assert payload["conf"]["correlation_id"] == "123"
+    assert payload["conf"]["git_commit_sha"] == "a" * 40
     assert "secret" not in json.dumps(payload)

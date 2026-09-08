@@ -61,15 +61,19 @@ class AirflowClient:
         *,
         source_override: str,
         correlation_id: str,
+        git_commit_sha: str | None = None,
     ) -> dict[str, object]:
         path = f"/api/v2/dags/{quote(dag_id, safe='')}/dagRuns"
+        conf = {
+            "source_override": source_override,
+            "correlation_id": correlation_id,
+        }
+        if git_commit_sha:
+            conf["git_commit_sha"] = git_commit_sha
         payload = {
             "dag_run_id": dag_run_id,
             "logical_date": None,
-            "conf": {
-                "source_override": source_override,
-                "correlation_id": correlation_id,
-            },
+            "conf": conf,
         }
         try:
             return self._request("POST", path, payload)
@@ -83,3 +87,7 @@ class AirflowClient:
             "GET",
             f"/api/v2/dags/{quote(dag_id, safe='')}/dagRuns/{quote(dag_run_id, safe='')}",
         )
+
+    def dag(self, dag_id: str) -> dict[str, object]:
+        """Return one exact DAG; callers decide how long discovery may take."""
+        return self._request("GET", f"/api/v2/dags/{quote(dag_id, safe='')}")

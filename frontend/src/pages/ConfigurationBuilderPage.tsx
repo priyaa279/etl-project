@@ -17,6 +17,7 @@ import { ErrorState, LoadingState } from "../components/PageState";
 import { StatusBadge } from "../components/StatusBadge";
 import { useApi } from "../hooks/useApi";
 import type { OnboardingConfiguration } from "../types/api";
+import type { OnboardingCompletion } from "../types/api";
 import { formatLabel } from "../utils/format";
 
 const datatypes = ["string", "integer", "decimal", "boolean", "date", "timestamp"];
@@ -86,7 +87,7 @@ function OperatorList({
         return (
           <article className="rounded-xl border border-slate-200 bg-white p-4" key={id}>
             <div className="flex flex-wrap items-start justify-between gap-3">
-              <div><p className="font-bold text-slate-950">{id} · {formatLabel(asString(item.type))}</p><p className="mt-1 break-all text-sm text-slate-600">{JSON.stringify(item)}</p></div>
+              <div className="min-w-0 flex-1"><p className="font-bold text-slate-950">{id} · {formatLabel(asString(item.type))}</p><p className="mt-1 break-all text-sm text-slate-600">{JSON.stringify(item)}</p></div>
               <div className="flex flex-wrap gap-2">
                 {onMove && <><button className="icon-button" type="button" aria-label={`Move ${id} up`} disabled={index === 0} onClick={() => void onMove(id, "up")}><ArrowUp className="h-4 w-4" /></button><button className="icon-button" type="button" aria-label={`Move ${id} down`} disabled={index === items.length - 1} onClick={() => void onMove(id, "down")}><ArrowDown className="h-4 w-4" /></button></>}
                 <button className="secondary-button" type="button" onClick={() => onEdit(item)}><Pencil className="h-4 w-4" />Edit</button>
@@ -285,6 +286,46 @@ function JsonNormalizationSection({ value, save }: { value: OnboardingConfigurat
   return <section className="panel p-6" id="normalization"><SectionHeader title="JSON Normalization" description="Nested paths and array explosion are explicit. The framework never guesses how to flatten JSON." /><div className="grid gap-4 md:grid-cols-2"><label className="field-label">Root path (optional)<input className="field-control" value={root} onChange={(event) => setRoot(event.target.value)} /></label><label className="field-label">Base field mappings<textarea className="field-control min-h-28" placeholder={"order_id=order.id\ncreated_at=order.created_at"} value={fieldText} onChange={(event) => setFieldText(event.target.value)} /></label><label className="field-label">Array path to explode (optional)<input className="field-control" placeholder="order.items" value={explodePath} onChange={(event) => setExplodePath(event.target.value)} /></label><label className="field-label">Array alias<input className="field-control" placeholder="item" value={explodeAs} onChange={(event) => setExplodeAs(event.target.value)} /></label><label className="field-label">Exploded field mappings<textarea className="field-control min-h-28" placeholder={"sku=item.sku\nquantity=item.quantity"} value={explodeFields} onChange={(event) => setExplodeFields(event.target.value)} /></label><label className="field-label">Canonical columns<textarea className="field-control min-h-28" placeholder={"order_id:string:required\nsku:string:required"} value={columnText} onChange={(event) => setColumnText(event.target.value)} /></label></div><button className="primary-button mt-4" type="button" onClick={() => void submit()}>Save normalization</button>{error && <p className="blocked-panel mt-4" role="alert">{error}</p>}</section>;
 }
 
+function ApprovalSection({
+  value,
+  completion,
+  busy,
+  act,
+}: {
+  value: OnboardingConfiguration;
+  completion: OnboardingCompletion | null;
+  busy: boolean;
+  act: (action: "approve" | "activate" | "run" | "retry", approvedBy?: string) => Promise<void>;
+}) {
+  const [approvedBy, setApprovedBy] = useState("");
+  const [acknowledged, setAcknowledged] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  if (!value.final_approved) {
+    const ready = value.validation.result === "VALID" && Boolean(value.validation.validated_hash) && value.activation_ready;
+    return <section className="panel p-6" id="approve">
+      <SectionHeader title="Final human approval" description="Approval is bound to the exact validated SHA-256 version shown below. Approval does not start ETL." />
+      <div className="grid gap-3 md:grid-cols-2"><p><strong>Validated draft hash</strong><br /><code className="break-all text-sm">{value.validation.validated_hash ?? "Not validated"}</code></p><p><strong>Current draft hash</strong><br /><code className="break-all text-sm">{value.validation.draft_hash}</code></p></div>
+      <label className="field-label mt-5">Approved by<input className="field-control" value={approvedBy} maxLength={120} onChange={(event) => setApprovedBy(event.target.value)} placeholder="Your name or operator ID" /></label>
+      <label className="mt-4 flex items-start gap-3 text-sm text-slate-700"><input className="mt-1" type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} /><span>I reviewed this exact configuration and understand that approval promotes it into the runnable config directory and creates a Git commit.</span></label>
+      {!confirming ? <button className="primary-button mt-5" type="button" disabled={busy || !ready || !acknowledged || !approvedBy.trim()} onClick={() => setConfirming(true)}>Review final approval</button> : <div className="warning-panel mt-5"><p><strong>Confirm approval</strong></p><p className="mt-1 text-sm">Promote this exact validated version for <strong>{value.dataset}</strong>? The first ETL run will still require a separate action.</p><div className="mt-4 flex gap-3"><button className="primary-button" type="button" disabled={busy} onClick={() => void act("approve", approvedBy)}>Confirm and approve</button><button className="secondary-button" type="button" disabled={busy} onClick={() => setConfirming(false)}>Cancel</button></div></div>}
+      {value.validation.result !== "VALID" && <p className="warning-panel mt-4">A current successful validation is required before approval.</p>}
+      {!value.activation_ready && <p className="warning-panel mt-4">This draft must be validated again to bind its stable source path and on-demand Airflow activation settings.</p>}
+    </section>;
+  }
+  const result = completion;
+  const run = result?.first_run;
+  return <section className="panel p-6" id="activation">
+    <div className="flex flex-wrap items-start justify-between gap-4"><SectionHeader title="Approved dataset activation" description="The configuration is immutable. Airflow discovery and the first run are separate operational steps." /><StatusBadge status={result?.status ?? value.status} /></div>
+    <div className="grid gap-3 rounded-xl bg-slate-50 p-4 md:grid-cols-2 lg:grid-cols-3"><p><strong>Approved by</strong><br />{value.approval.approved_by}</p><p><strong>Approved at</strong><br />{value.approval.approved_at}</p><p><strong>Git commit</strong><br /><code>{value.approval.git_commit_sha}</code></p><p><strong>Git push</strong><br />{formatLabel(value.approval.git_push_status ?? "not requested")}</p><p><strong>DAG</strong><br /><code>{value.approval.dag_id}</code></p><p><strong>Validated hash</strong><br /><code className="break-all text-xs">{value.approval.validation_hash}</code></p><p><strong>Approved hash</strong><br /><code className="break-all text-xs">{value.approval.approved_config_hash}</code></p></div>
+    {result?.safe_error && <p className="warning-panel mt-4">{result.safe_error}</p>}
+    {result?.status === "ACTIVATION_FAILED" && <button className="primary-button mt-4" type="button" disabled={busy} onClick={() => void act("activate")}>Retry DAG discovery</button>}
+    {result?.status === "READY_FOR_FIRST_RUN" && <button className="primary-button mt-4" type="button" disabled={busy} onClick={() => void act("run")}>Run first ETL load</button>}
+    {result?.status === "FIRST_RUN_FAILED" && <button className="primary-button mt-4" type="button" disabled={busy} onClick={() => void act("retry")}>Retry first ETL load</button>}
+    {run?.correlation_id && <div className="mt-5 grid gap-3 md:grid-cols-2 lg:grid-cols-4"><p><strong>Correlation ID</strong><br /><code className="break-all text-sm">{run.correlation_id}</code></p><p><strong>Airflow run</strong><br /><code className="break-all text-sm">{run.airflow_run_id}</code></p><p><strong>Airflow state</strong><br />{formatLabel(run.airflow_state ?? "waiting")}</p><p><strong>ETL run</strong><br /><code>{run.etl_run_id ?? "Waiting"}</code></p></div>}
+    {run?.etl_run && <div className="success-panel mt-5"><p><strong>First run {formatLabel(run.etl_run.status)}</strong></p><p className="mt-1 text-sm">Extracted {run.etl_run.rows_extracted ?? 0} · passed {run.etl_run.rows_contract_passed ?? 0} · quarantined {run.etl_run.rows_quarantined ?? 0} · loaded {run.etl_run.rows_loaded ?? 0}</p><div className="mt-3 flex gap-4"><Link className="font-bold text-cyan-800" to={`/runs/${encodeURIComponent(run.etl_run.run_id)}`}>Run detail</Link><Link className="font-bold text-cyan-800" to={`/datasets/${encodeURIComponent(value.dataset)}`}>Dataset detail</Link></div></div>}
+  </section>;
+}
+
 export function ConfigurationBuilderPage() {
   const { onboardingId = "" } = useParams();
   const loader = useCallback(() => api.onboardingConfiguration(onboardingId), [onboardingId]);
@@ -294,15 +335,25 @@ export function ConfigurationBuilderPage() {
   const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<"builder" | "yaml">("builder");
   const [yaml, setYaml] = useState<string | null>(null);
+  const [completion, setCompletion] = useState<OnboardingCompletion | null>(null);
   const current = configuration ?? state.data;
   const save = useCallback(async (next: Promise<OnboardingConfiguration>) => { setBusy(true); setError(null); try { setConfiguration(await next); } catch (reason) { setError(reason instanceof Error ? reason.message : "Configuration could not be saved."); throw reason; } finally { setBusy(false); } }, []);
   useEffect(() => { if (mode === "yaml") void api.onboardingYAML(onboardingId).then((result) => setYaml(result.yaml)).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "YAML could not be loaded.")); }, [mode, onboardingId, configuration]);
+  useEffect(() => {
+    if (!current?.final_approved) return;
+    let active = true;
+    const refresh = () => void api.onboardingCompletion(onboardingId).then((result) => { if (active) setCompletion(result); }).catch(() => undefined);
+    refresh();
+    const timer = window.setInterval(refresh, 2500);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [current?.final_approved, onboardingId]);
   const progress = useMemo(() => current ? [
     ["Source", true], ["Profile", true], ["Schema", current.review_complete],
     ["Transformations", current.review_complete], ["Data Quality", current.review_complete],
     ["Load Strategy", Boolean(current.load.strategy)], ["Schema Drift", Object.keys(current.schema_drift).length > 0],
-    ["Review & Validate", current.validation.result === "VALID"],
-  ] as [string, boolean][] : [], [current]);
+    ["Review & Validate", current.validation.result === "VALID"], ["Approval", current.final_approved],
+    ["First Run", completion?.status === "SUCCEEDED"],
+  ] as [string, boolean][] : [], [current, completion?.status]);
 
   if (state.loading) return <LoadingState label="Loading configuration builder" />;
   if (state.error) return <ErrorState message={state.error} onRetry={state.reload} />;
@@ -310,29 +361,41 @@ export function ConfigurationBuilderPage() {
   if (!current.review_complete && current.source_type !== "json") return <><Link to={`/onboarding/${encodeURIComponent(onboardingId)}/review`} className="mb-5 inline-flex items-center gap-2 text-sm font-bold text-cyan-700"><ArrowLeft className="h-4 w-4" />Review Center</Link><PageHeader eyebrow="Configuration Builder" title={current.dataset} description="Schema and profiler decisions must be complete first." /><p className="blocked-panel">Complete every required schema and key-candidate decision before configuring this dataset.</p></>;
 
   const validate = async () => { try { await save(api.validateOnboardingConfiguration(onboardingId)); } catch { /* shared error panel already contains the safe response */ } };
+  const operationalAction = async (action: "approve" | "activate" | "run" | "retry", approvedBy?: string) => {
+    setBusy(true); setError(null);
+    try {
+      const result = action === "approve"
+        ? await api.approveOnboarding(onboardingId, { expected_hash: current.validation.validated_hash ?? "", approved_by: approvedBy ?? "", acknowledged: true })
+        : action === "activate" ? await api.activateOnboarding(onboardingId)
+          : await api.runOnboardingFirst(onboardingId, action === "retry");
+      setCompletion(result);
+      setConfiguration(await api.onboardingConfiguration(onboardingId));
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Onboarding operation could not be completed."); }
+    finally { setBusy(false); }
+  };
   return <>
     <Link to={`/onboarding/${encodeURIComponent(onboardingId)}/review`} className="mb-5 inline-flex items-center gap-2 text-sm font-bold text-cyan-700 hover:text-cyan-900"><ArrowLeft className="h-4 w-4" />Review Center</Link>
     <PageHeader eyebrow="Configuration Builder" title={current.dataset} description="Build the dataset contract using the same validators and operators as the ETL runtime." action={<StatusBadge status={current.status} />} />
     <div className="panel mb-6 overflow-x-auto p-4"><ol className="flex min-w-max gap-2" aria-label="Onboarding progress">{progress.map(([label, complete]) => <li key={label} className={complete ? "example-chip text-emerald-700" : "example-chip"}>{complete && <CheckCircle2 className="mr-1 inline h-4 w-4" />}{label}</li>)}</ol></div>
     <div className="panel mb-6 flex gap-1 p-2" role="tablist" aria-label="Configuration modes"><button className={mode === "builder" ? "review-tab review-tab-active" : "review-tab"} role="tab" aria-selected={mode === "builder"} onClick={() => setMode("builder")}>Configuration Builder</button><button className={mode === "yaml" ? "review-tab review-tab-active" : "review-tab"} role="tab" aria-selected={mode === "yaml"} onClick={() => setMode("yaml")}><FileCode2 className="h-4 w-4" />YAML View</button></div>
     {busy && <p className="info-panel mb-4">Saving authoritative draft…</p>}{error && <p className="blocked-panel mb-4" role="alert">{error}</p>}
-    {mode === "yaml" ? <section className="panel p-6"><SectionHeader title="Current draft YAML" description="Read-only persisted YAML. Refreshing this page reloads the same server-side draft." />{yaml ? <pre className="yaml-preview">{yaml}</pre> : <LoadingState label="Loading draft YAML" />}</section> : <div className="space-y-6">
-      {current.source_type === "json" && <JsonNormalizationSection value={current} save={save} />}
+    {mode === "yaml" ? <section className="panel p-6"><SectionHeader title={current.final_approved ? "Approved YAML" : "Current draft YAML"} description="Read-only persisted YAML. Refreshing this page reloads the authoritative server-side configuration." />{yaml ? <pre className="yaml-preview">{yaml}</pre> : <LoadingState label="Loading configuration YAML" />}</section> : <div className="space-y-6">
+      {!current.final_approved && current.source_type === "json" && <JsonNormalizationSection value={current} save={save} />}
       {!current.review_complete && <p className="blocked-panel">Save explicit JSON normalization to resolve the nested schema before configuring later stages.</p>}
-      {current.review_complete && <TransformationSection value={current} save={save} />}
-      {current.review_complete && <QualitySection value={current} save={save} />}
-      {current.review_complete && <LoadSection value={current} save={save} />}
-      {current.review_complete && <DriftSection value={current} save={save} />}
-      {current.review_complete &&
+      {!current.final_approved && current.review_complete && <TransformationSection value={current} save={save} />}
+      {!current.final_approved && current.review_complete && <QualitySection value={current} save={save} />}
+      {!current.final_approved && current.review_complete && <LoadSection value={current} save={save} />}
+      {!current.final_approved && current.review_complete && <DriftSection value={current} save={save} />}
+      {!current.final_approved && current.review_complete &&
       <section className="panel p-6" id="validate"><SectionHeader title="Review & Validate" description="Validate the exact persisted draft and uploaded source before it can be handed to a later approval milestone." />
-        <div className="mb-5 grid gap-3 rounded-xl bg-slate-50 p-4 sm:grid-cols-2 lg:grid-cols-4"><p><strong>Source</strong><br />{formatLabel(current.source_type)}</p><p><strong>Columns</strong><br />{current.columns.length}</p><p><strong>Transformations</strong><br />{current.transformations.length}</p><p><strong>Quality rules</strong><br />{current.contracts.length}</p><p><strong>Load strategy</strong><br />{formatLabel(asString(current.load.strategy))}</p><p><strong>Watermark</strong><br />{asString((current.load.watermark as Record<string, unknown> | undefined)?.column) || "Not applicable"}</p><p><strong>Review decisions</strong><br />Complete</p><p><strong>Approval</strong><br />Not approved</p></div>
+        <div className="mb-5 grid gap-3 rounded-xl bg-slate-50 p-4 sm:grid-cols-2 lg:grid-cols-4"><p><strong>Source</strong><br />{formatLabel(current.source_type)}</p><p><strong>Columns</strong><br />{current.columns.length}</p><p><strong>Transformations</strong><br />{current.transformations.length}</p><p><strong>Quality rules</strong><br />{current.contracts.length}</p><p><strong>Load strategy</strong><br />{formatLabel(asString(current.load.strategy))}</p><p><strong>Watermark</strong><br />{asString((current.load.watermark as Record<string, unknown> | undefined)?.column) || "Not applicable"}</p><p><strong>Orchestration</strong><br />{current.orchestration.enabled ? "Enabled · on demand" : "Disabled"}</p><p><strong>Approval</strong><br />Not approved</p></div>
         <div className="grid gap-3 md:grid-cols-2"><p><strong>Draft hash</strong><br /><code className="break-all text-sm">{current.validation.draft_hash}</code></p><p><strong>Result</strong><br /><StatusBadge status={current.validation.result} /></p></div>
         {current.validation.result === "VALID" && <p className="success-panel mt-4"><ShieldCheck className="mr-2 inline h-5 w-5" />Configuration is ready for approval. It remains explicitly unapproved.</p>}
         {current.validation.result === "INVALID" && <ul className="blocked-panel mt-4">{current.validation.errors.map((item, index) => <li key={`${item.section}-${index}`}><AlertTriangle className="mr-2 inline h-4 w-4" />{item.section}{item.field ? ` · ${item.field}` : ""}: {item.message}</li>)}</ul>}
         <button className="primary-button mt-4" type="button" disabled={busy || !current.normalization_complete} onClick={() => void validate()}>Validate configuration</button>
         {!current.normalization_complete && <p className="warning-panel mt-4">Explicit JSON normalization is required before validation.</p>}
-        <p className="mt-4 text-sm text-slate-600">No approval or pipeline run is available in this milestone.</p>
       </section>}
+      {current.review_complete && <ApprovalSection value={current} completion={completion} busy={busy} act={operationalAction} />}
     </div>}
   </>;
 }

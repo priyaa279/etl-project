@@ -18,7 +18,7 @@ class ScheduledConfig:
     path: Path
     dataset: str
     dag_id: str
-    schedule: str
+    schedule: str | None
     retries: int
     retry_delay_minutes: int
 
@@ -28,6 +28,11 @@ class ConfigValidation:
     path: Path
     dataset: str
     mode: str
+
+
+def dag_id_for_dataset(dataset: str) -> str:
+    """Return the one canonical DAG identifier used by discovery and the API."""
+    return f"etl_{dataset}"
 
 
 def _config_paths(config_dir: str | Path) -> tuple[Path, ...]:
@@ -57,12 +62,11 @@ def discover_scheduled_configs(config_dir: str | Path) -> tuple[ScheduledConfig,
         orchestration = config.orchestration
         if not orchestration.enabled:
             continue
-        assert orchestration.schedule is not None
         scheduled.append(
             ScheduledConfig(
                 path=path,
                 dataset=config.dataset,
-                dag_id=f"etl_{config.dataset}",
+                dag_id=dag_id_for_dataset(config.dataset),
                 schedule=orchestration.schedule,
                 retries=orchestration.retries,
                 retry_delay_minutes=orchestration.retry_delay_minutes,
@@ -106,6 +110,7 @@ def run_cli_stage(
     config_path: str | Path,
     source_override: str | None = None,
     correlation_id: str | None = None,
+    git_commit_sha: str | None = None,
 ) -> None:
     """Run the same CLI entry point used outside Airflow and propagate its exit status."""
     if stage not in {"validate", "run"}:
@@ -115,4 +120,7 @@ def run_cli_stage(
         command.extend(["--source-override", source_override])
     if stage == "run" and correlation_id:
         command.extend(["--correlation-id", correlation_id])
-    subprocess.run(command, check=True)
+    environment = os.environ.copy()
+    if git_commit_sha:
+        environment["ETL_GIT_COMMIT_SHA"] = git_commit_sha
+    subprocess.run(command, check=True, env=environment)

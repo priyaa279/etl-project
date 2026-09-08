@@ -20,6 +20,7 @@ def run_etl_from_dag_run(config_path: str, dag_run=None) -> None:
         config_path,
         source_override=conf.get("source_override"),
         correlation_id=conf.get("correlation_id"),
+        git_commit_sha=conf.get("git_commit_sha"),
     )
 
 

@@ -7,15 +7,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from metadata_etl_api.models import (
+    ApprovalRequest,
     ColumnPrivacyDecision,
     DatasetSummary,
     DatasetUploadCapability,
     DatasetWatermarkResponse,
     DraftYAML,
+    FirstRunRequest,
     HealthResponse,
     KeyCandidateDecision,
     MoveDirection,
     OnboardingCapability,
+    OnboardingCompletion,
     OnboardingConfiguration,
     OnboardingReview,
     OnboardingSession,
@@ -74,7 +77,7 @@ def create_app() -> FastAPI:
     application = FastAPI(
         title="ETL Control Center API",
         description="ETL monitoring plus gated data operations and onboarding review.",
-        version="10.2.1",
+        version="10.2.2",
     )
     application.add_middleware(
         CORSMiddleware,
@@ -400,6 +403,47 @@ def create_app() -> FastAPI:
         onboarding_id: str, onboarding: Onboarding
     ) -> dict[str, object]:
         return onboarding.validate_configuration(onboarding_id)
+
+    @application.post(
+        "/api/onboarding/{onboarding_id}/approve",
+        response_model=OnboardingCompletion,
+        tags=["onboarding"],
+    )
+    def approve_onboarding(
+        onboarding_id: str, value: ApprovalRequest, onboarding: Onboarding
+    ) -> dict[str, object]:
+        return onboarding.approve(
+            onboarding_id,
+            expected_hash=value.expected_hash,
+            approved_by=value.approved_by,
+            acknowledged=value.acknowledged,
+        )
+
+    @application.post(
+        "/api/onboarding/{onboarding_id}/activate",
+        response_model=OnboardingCompletion,
+        tags=["onboarding"],
+    )
+    def activate_onboarding(onboarding_id: str, onboarding: Onboarding) -> dict[str, object]:
+        return onboarding.activate(onboarding_id)
+
+    @application.post(
+        "/api/onboarding/{onboarding_id}/first-run",
+        response_model=OnboardingCompletion,
+        tags=["onboarding"],
+    )
+    def first_onboarding_run(
+        onboarding_id: str, value: FirstRunRequest, onboarding: Onboarding
+    ) -> dict[str, object]:
+        return onboarding.run_first(onboarding_id, retry=value.retry)
+
+    @application.get(
+        "/api/onboarding/{onboarding_id}/completion",
+        response_model=OnboardingCompletion,
+        tags=["onboarding"],
+    )
+    def onboarding_completion(onboarding_id: str, onboarding: Onboarding) -> dict[str, object]:
+        return onboarding.completion(onboarding_id)
 
     @application.get(
         "/api/datasets/{dataset}/runs", response_model=list[RunDetail], tags=["datasets"]

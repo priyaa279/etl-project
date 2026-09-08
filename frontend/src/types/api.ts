@@ -307,6 +307,7 @@ export interface OnboardingConfiguration {
   status: string;
   review_complete: boolean;
   normalization_complete: boolean;
+  activation_ready: boolean;
   columns: ConfigurationColumn[];
   post_transformation_columns: { name: string; datatype: string }[];
   accepted_key_candidates: string[];
@@ -315,6 +316,37 @@ export interface OnboardingConfiguration {
   contracts: Record<string, unknown>[];
   load: Record<string, unknown>;
   schema_drift: Record<string, string>;
+  orchestration: Record<string, unknown>;
   validation: ConfigurationValidation;
-  final_approved: false;
+  final_approved: boolean;
+  approval: ApprovalMetadata;
+}
+
+export interface ApprovalMetadata {
+  approved_at: string | null;
+  approved_by: string | null;
+  validation_hash: string | null;
+  approved_config_hash: string | null;
+  git_commit_sha: string | null;
+  git_push_status: string | null;
+  dag_id: string | null;
+  activation_checked_at: string | null;
+}
+
+export interface OnboardingCompletion {
+  onboarding_id: string;
+  dataset: string;
+  status: string;
+  safe_error: string | null;
+  approval: ApprovalMetadata;
+  first_run: {
+    attempt: number;
+    correlation_id: string | null;
+    airflow_dag_id: string | null;
+    airflow_run_id: string | null;
+    airflow_state: string | null;
+    etl_run_id: string | null;
+    completed_at: string | null;
+    etl_run: OperationRunSummary | null;
+  };
 }

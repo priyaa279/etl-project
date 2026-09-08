@@ -213,6 +213,14 @@ class OnboardingSession(BaseModel):
     updated_at: datetime
     safe_error: str | None
     profile_summary: OnboardingProfileSummary | None
+    approved_at: datetime | None = None
+    approved_by: str | None = None
+    git_commit_sha: str | None = None
+    dag_id: str | None = None
+    first_run_correlation_id: str | None = None
+    airflow_run_id: str | None = None
+    etl_run_id: str | None = None
+    completed_at: datetime | None = None
 
 
 class SchemaDecision(BaseModel):
@@ -242,7 +250,7 @@ class OnboardingReview(BaseModel):
     fields: list[dict[str, Any]]
     unresolved: list[dict[str, str]]
     progress: dict[str, int]
-    final_approved: Literal[False]
+    final_approved: bool
 
 
 class DraftYAML(BaseModel):
@@ -266,6 +274,7 @@ class OnboardingConfiguration(BaseModel):
     status: str
     review_complete: bool
     normalization_complete: bool
+    activation_ready: bool
     columns: list[dict[str, Any]]
     post_transformation_columns: list[dict[str, str]]
     accepted_key_candidates: list[str]
@@ -274,5 +283,26 @@ class OnboardingConfiguration(BaseModel):
     contracts: list[dict[str, Any]]
     load: dict[str, Any]
     schema_drift: dict[str, str]
+    orchestration: dict[str, Any]
     validation: dict[str, Any]
-    final_approved: Literal[False]
+    final_approved: bool
+    approval: dict[str, Any]
+
+
+class ApprovalRequest(BaseModel):
+    expected_hash: str
+    approved_by: str
+    acknowledged: bool
+
+
+class FirstRunRequest(BaseModel):
+    retry: bool = False
+
+
+class OnboardingCompletion(BaseModel):
+    onboarding_id: str
+    dataset: str
+    status: str
+    safe_error: str | None
+    approval: dict[str, Any]
+    first_run: dict[str, Any]

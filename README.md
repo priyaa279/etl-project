@@ -35,8 +35,8 @@ commands; its separate setup and smoke-test instructions appear below.
 
 ## Application UI
 
-Milestone 10C.2A preserves the read-only monitoring application and existing-dataset operations
-while extending separately gated onboarding through final pre-approval validation:
+Milestone 10C.2B preserves the read-only monitoring application and existing-dataset operations
+while completing the separately gated new-dataset onboarding lifecycle:
 
 ```text
 Existing approved dataset -> upload -> preflight -> explicit run
@@ -47,14 +47,15 @@ Existing approved dataset -> upload -> preflight -> explicit run
 ```text
 Completely new dataset -> upload -> profile -> draft YAML -> human schema review
   -> explicit normalization -> transformations -> quality -> load and drift policy
-  -> validate exact draft -> READY_FOR_APPROVAL (still approved: false)
+  -> validate exact draft -> explicit human approval -> Git-versioned config
+  -> generic Airflow discovery -> explicit first run -> correlated observability
 ```
 
 The **ETL Control Center** includes Overview, Datasets, Runs, Data Quality, Schema Drift, and
 Watermarks pages, plus dataset and run detail views. Eligible Dataset Detail pages now link to
 **Upload new data**. PostgreSQL-source datasets clearly show that file upload is not applicable.
 When enabled, **Onboard Dataset** is a separate action that creates and validates only an
-unapproved draft; it never promotes configuration, schedules Airflow, or starts ETL.
+unapproved draft. Approval and the first ETL run remain separate, explicit actions.
 
 Operational writes are disabled by default. Set `ETL_CONTROL_OPERATIONS_ENABLED=true` only in a
 trusted local environment, configure server-side Airflow authentication, and restart the API.
@@ -67,6 +68,15 @@ Git-ignored `data/onboarding`; generated YAML is stored in Git-ignored `configs/
 served by the frontend. YAML remains the source of truth, while React provides the human-friendly
 review and configuration interface. Every edit is validated server-side and atomically written to
 the actual draft YAML; refreshing the browser reloads that persisted source of truth.
+Final approval checks the current bytes against the successful validation SHA-256, records the
+human approver, materializes the source under Git-ignored `data/sources`, promotes only
+`configs/<dataset>.yaml`, and creates a local Git commit. The repository must otherwise be clean.
+All configuration editing endpoints reject changes after approval.
+
+`ETL_CONTROL_GIT_PUSH_ENABLED` is a separate gate and defaults to false. Local versioning is the
+default; when explicitly enabled, the restricted adapter can push only `HEAD` to the configured
+fixed remote and branch. Browser input can never choose a repository, path, remote, branch, or Git
+command.
 
 The upload landing area is temporary application input, not ETL evidence. Once Airflow invokes the
 CLI with `--source-override`, the normal connector preserves a separate immutable raw artifact.
@@ -85,7 +95,7 @@ docker compose up -d --build
 - Airflow: `http://localhost:8080`
 
 For separate frontend/API development commands, endpoint details, privacy boundaries, and the
-10A, 10B, 10C.1, and 10C.2A boundaries, see
+10A, 10B, 10C.1, 10C.2A, and 10C.2B boundaries, see
 [frontend architecture](docs/frontend_architecture.md).
 
 ## Portfolio proof
@@ -192,12 +202,22 @@ Upload -> existing profiler -> existing starter-config generator -> unapproved d
        -> explicit JSON normalization where needed
        -> transformations -> contracts and quarantine privacy -> load -> drift
        -> validate exact draft and uploaded source -> READY_FOR_APPROVAL
+       -> acknowledge exact hash -> promote approved YAML -> Git commit
+       -> wait for generic DAG -> explicit first run -> completion
 ```
 
 The profiler proposes. The human approves. The engine executes only approved configuration.
-Milestone 10C.2A intentionally stops before final approval. The YAML remains `approved: false` even
-after successful validation. Promotion, Git workflow, scheduling, and the first ETL run are
-deferred to Milestone 10C.2B.
+The approval request carries the browser-displayed expected hash and a self-declared approver. The
+server accepts it only when that hash equals both the persisted successful-validation hash and the
+current draft hash. It does not silently revalidate a changed draft. Older pre-10C.2B drafts are
+upgraded to the stable source/on-demand orchestration shape only during an explicit validation,
+which produces a new hash that must be reviewed.
+
+Approved configs enable the existing generic DAG factory with `schedule: null`, so they are
+available on demand without silently creating a recurring schedule. Airflow discovery may be
+retried without revoking approval. The first run is a separate button and carries one exact
+correlation ID through Airflow, the CLI, the ledger, and the completion view. A failed first run
+does not revoke the approved configuration and can be retried explicitly.
 
 The existing CLI onboarding flow remains available:
 
