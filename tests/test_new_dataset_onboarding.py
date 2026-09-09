@@ -906,6 +906,7 @@ class FakeOnboardingAirflow:
         self.discovery_delay_checks = discovery_delay_checks
         self.dag_checks = 0
         self.state = "QUEUED"
+        self.pause_updates: list[dict[str, object]] = []
         self.triggers: list[dict[str, str]] = []
 
     def dag(self, dag_id: str) -> dict[str, object]:
@@ -915,6 +916,10 @@ class FakeOnboardingAirflow:
 
             raise AirflowError("not discovered")
         return {"dag_id": dag_id}
+
+    def set_paused(self, dag_id: str, *, paused: bool) -> dict[str, object]:
+        self.pause_updates.append({"dag_id": dag_id, "paused": paused})
+        return {"dag_id": dag_id, "is_paused": paused}
 
     def trigger(
         self,
@@ -1289,6 +1294,7 @@ def test_first_run_is_explicit_correlated_idempotent_and_retryable(tmp_path: Pat
     first = client.post(f"/api/onboarding/{onboarding_id}/first-run", json={"retry": False})
     duplicate = client.post(f"/api/onboarding/{onboarding_id}/first-run", json={"retry": False})
     assert first.status_code == duplicate.status_code == 200
+    assert airflow.pause_updates == [{"dag_id": "etl_first_time_students", "paused": False}]
     assert len(airflow.triggers) == 1
     correlation = first.json()["first_run"]["correlation_id"]
     assert airflow.triggers[0]["correlation_id"] == correlation

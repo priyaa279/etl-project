@@ -920,6 +920,7 @@ class OnboardingService:
             PurePosixPath(self.settings.airflow_source_root) / claimed["source_key"]
         ).as_posix()
         try:
+            self.airflow.set_paused(claimed["dag_id"], paused=False)
             response = self.airflow.trigger(
                 claimed["dag_id"],
                 claimed["airflow_run_id"],

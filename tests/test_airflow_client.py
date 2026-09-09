@@ -89,3 +89,24 @@ def test_default_discovery_timeout_covers_airflow_reparse_interval(monkeypatch: 
     settings = APISettings.from_environment()
 
     assert settings.airflow_discovery_timeout_seconds >= 60
+
+
+def test_airflow_client_updates_one_exact_dag_pause_state(monkeypatch: Any) -> None:
+    requests: list[Any] = []
+
+    def fake_urlopen(request: Any, timeout: float) -> Response:
+        assert timeout == 10
+        requests.append(request)
+        if request.full_url.endswith("/auth/token"):
+            return Response({"access_token": "server-token"})
+        return Response({"dag_id": "etl_new_domain", "is_paused": False})
+
+    monkeypatch.setattr("metadata_etl_api.airflow_client.urlopen", fake_urlopen)
+    client = AirflowClient("http://airflow", username="admin", password="secret")
+
+    response = client.set_paused("etl_new_domain", paused=False)
+
+    assert response["is_paused"] is False
+    assert requests[1].method == "PATCH"
+    assert requests[1].full_url == "http://airflow/api/v2/dags/etl_new_domain"
+    assert json.loads(requests[1].data) == {"is_paused": False}

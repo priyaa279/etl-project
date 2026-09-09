@@ -9,6 +9,7 @@ import { ConfigurationBuilderPage } from "../pages/ConfigurationBuilderPage";
 import { ReviewCenterPage } from "../pages/ReviewCenterPage";
 import type {
   OnboardingCapability,
+  OnboardingCompletion,
   OnboardingConfiguration,
   OnboardingReview,
   OnboardingSession,
@@ -422,6 +423,48 @@ it("requires acknowledgment and a second confirmation before exact-hash approval
   expect(run).not.toHaveBeenCalled();
   await user.click(await screen.findByRole("button", { name: "Run first ETL load" }));
   expect(run).toHaveBeenCalledWith("onboarding-123", false);
+});
+
+it("reconciles the page status with the polled first-run completion", async () => {
+  const approved = {
+    ...configuration,
+    status: "QUEUED",
+    final_approved: true,
+    approval: {
+      approved_at: "2026-09-07T12:00:00Z",
+      approved_by: "Priya A",
+      validation_hash: configuration.validation.draft_hash,
+      approved_config_hash: "b".repeat(64),
+      git_commit_sha: "c".repeat(40),
+      git_push_status: "DISABLED",
+      dag_id: "etl_course_enrollments",
+      activation_checked_at: "2026-09-07T12:00:01Z",
+    },
+  } as OnboardingConfiguration;
+  const completion: OnboardingCompletion = {
+    onboarding_id: "onboarding-123",
+    dataset: "course_enrollments",
+    status: "SUCCEEDED",
+    safe_error: null,
+    approval: approved.approval,
+    first_run: {
+      attempt: 1,
+      correlation_id: "onboarding:onboarding-123:first-run:1",
+      airflow_dag_id: "etl_course_enrollments",
+      airflow_run_id: "onboarding__onboarding123__1",
+      airflow_state: "SUCCESS",
+      etl_run_id: "RUN_FIRST",
+      completed_at: "2026-09-07T12:01:00Z",
+      etl_run: null,
+    },
+  };
+  vi.spyOn(api, "onboardingConfiguration").mockResolvedValue(approved);
+  vi.spyOn(api, "onboardingCompletion").mockResolvedValue(completion);
+
+  renderRoute(<ConfigurationBuilderPage />, "/onboarding/onboarding-123/configure", "/onboarding/:onboardingId/configure");
+
+  expect((await screen.findAllByText("SUCCEEDED")).length).toBeGreaterThan(0);
+  expect(screen.queryByText("QUEUED")).not.toBeInTheDocument();
 });
 
 it("requires explicit nested JSON normalization before later configuration", async () => {

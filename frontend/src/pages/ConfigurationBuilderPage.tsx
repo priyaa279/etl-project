@@ -375,7 +375,7 @@ export function ConfigurationBuilderPage() {
   };
   return <>
     <Link to={`/onboarding/${encodeURIComponent(onboardingId)}/review`} className="mb-5 inline-flex items-center gap-2 text-sm font-bold text-cyan-700 hover:text-cyan-900"><ArrowLeft className="h-4 w-4" />Review Center</Link>
-    <PageHeader eyebrow="Configuration Builder" title={current.dataset} description="Build the dataset contract using the same validators and operators as the ETL runtime." action={<StatusBadge status={current.status} />} />
+    <PageHeader eyebrow="Configuration Builder" title={current.dataset} description="Build the dataset contract using the same validators and operators as the ETL runtime." action={<StatusBadge status={completion?.status ?? current.status} />} />
     <div className="panel mb-6 overflow-x-auto p-4"><ol className="flex min-w-max gap-2" aria-label="Onboarding progress">{progress.map(([label, complete]) => <li key={label} className={complete ? "example-chip text-emerald-700" : "example-chip"}>{complete && <CheckCircle2 className="mr-1 inline h-4 w-4" />}{label}</li>)}</ol></div>
     <div className="panel mb-6 flex gap-1 p-2" role="tablist" aria-label="Configuration modes"><button className={mode === "builder" ? "review-tab review-tab-active" : "review-tab"} role="tab" aria-selected={mode === "builder"} onClick={() => setMode("builder")}>Configuration Builder</button><button className={mode === "yaml" ? "review-tab review-tab-active" : "review-tab"} role="tab" aria-selected={mode === "yaml"} onClick={() => setMode("yaml")}><FileCode2 className="h-4 w-4" />YAML View</button></div>
     {busy && <p className="info-panel mb-4">Saving authoritative draft…</p>}{error && <p className="blocked-panel mb-4" role="alert">{error}</p>}

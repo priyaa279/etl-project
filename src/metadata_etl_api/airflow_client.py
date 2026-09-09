@@ -109,3 +109,11 @@ class AirflowClient:
     def dag(self, dag_id: str) -> dict[str, object]:
         """Return one exact DAG; callers decide how long discovery may take."""
         return self._request("GET", f"/api/v2/dags/{quote(dag_id, safe='')}")
+
+    def set_paused(self, dag_id: str, *, paused: bool) -> dict[str, object]:
+        """Set one exact DAG's scheduler eligibility through Airflow's stable API."""
+        return self._request(
+            "PATCH",
+            f"/api/v2/dags/{quote(dag_id, safe='')}",
+            {"is_paused": paused},
+        )
