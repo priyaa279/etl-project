@@ -1,0 +1,218 @@
+config_schema_version: '1.0'
+dataset:
+  name: term_course
+review:
+  required: true
+  approved: true
+  approved_by: user
+onboarding:
+  generated_at: '2026-09-09T17:04:30.444341+00:00'
+  rows_scanned: 47
+  rows_profiled: 47
+  sample_size_requested: 10000
+  exact_duplicate_count: 0
+  nested_fields: []
+  note: Duplicates are reported only; no deduplication is configured automatically.
+source:
+  type: csv
+  path: data/sources/term_course/source.csv
+  options:
+    delimiter: ','
+runtime:
+  raw_root: data/raw
+normalization:
+  trim_strings: true
+  null_tokens: []
+columns:
+  term:
+    source: TERM
+    type: string
+    nullable: false
+    inference:
+      confidence: high
+      reason: text_values
+    profile:
+      null_percentage: 0.0
+      possible_null_tokens: []
+      distinct_count: 1
+      cardinality_ratio: 0.0213
+      leading_zeros_detected: false
+      possible_key_candidate: false
+      observed_examples:
+      - Fall 2025
+      string_length:
+        min: 9
+        max: 9
+        average: 9
+  student_id:
+    source: STUDENT_ID
+    type: integer
+    nullable: false
+    inference:
+      confidence: high
+      reason: integer_pattern
+    profile:
+      null_percentage: 0.0
+      possible_null_tokens: []
+      distinct_count: 20
+      cardinality_ratio: 0.4255
+      leading_zeros_detected: false
+      possible_key_candidate: false
+      observed_examples:
+      - '100001'
+      - '100002'
+      - '100003'
+      - '100004'
+      - '100005'
+      numeric_min: '100001'
+      numeric_max: '100020'
+  course:
+    source: COURSE
+    type: string
+    nullable: false
+    inference:
+      confidence: high
+      reason: text_values
+    profile:
+      null_percentage: 0.0
+      possible_null_tokens: []
+      distinct_count: 42
+      cardinality_ratio: 0.8936
+      leading_zeros_detected: false
+      possible_key_candidate: false
+      observed_examples:
+      - BIOL 1110
+      - MATH 1111
+      - HIST 1400
+      - CS 2300
+      - CS 2400
+      string_length:
+        min: 7
+        max: 9
+        average: 8.383
+  section:
+    source: SECTION
+    type: integer
+    nullable: false
+    inference:
+      confidence: high
+      reason: integer_pattern
+    profile:
+      null_percentage: 0.0
+      possible_null_tokens: []
+      distinct_count: 3
+      cardinality_ratio: 0.0638
+      leading_zeros_detected: false
+      possible_key_candidate: false
+      observed_examples:
+      - '1'
+      - '2'
+      - '3'
+      numeric_min: '1'
+      numeric_max: '3'
+  credit_hours:
+    source: CREDIT_HOURS
+    type: integer
+    nullable: false
+    inference:
+      confidence: high
+      reason: integer_pattern
+    profile:
+      null_percentage: 0.0
+      possible_null_tokens: []
+      distinct_count: 3
+      cardinality_ratio: 0.0638
+      leading_zeros_detected: false
+      possible_key_candidate: false
+      observed_examples:
+      - '4'
+      - '3'
+      - '1'
+      numeric_min: '1'
+      numeric_max: '4'
+  final_grade:
+    source: FINAL_GRADE
+    type: string
+    nullable: false
+    inference:
+      confidence: high
+      reason: text_values
+    profile:
+      null_percentage: 0.0
+      possible_null_tokens: []
+      distinct_count: 3
+      cardinality_ratio: 0.0638
+      leading_zeros_detected: false
+      possible_key_candidate: false
+      observed_examples:
+      - A
+      - B
+      - C
+      string_length:
+        min: 1
+        max: 1
+        average: 1
+  grade_points:
+    source: GRADE_POINTS
+    type: decimal
+    nullable: false
+    inference:
+      confidence: high
+      reason: decimal_pattern
+    profile:
+      null_percentage: 0.0
+      possible_null_tokens: []
+      distinct_count: 10
+      cardinality_ratio: 0.2128
+      leading_zeros_detected: false
+      possible_key_candidate: false
+      observed_examples:
+      - '16'
+      - '9.9'
+      - '10.8'
+      - '12'
+      - '9'
+      numeric_min: '4'
+      numeric_max: '16'
+  instructor:
+    source: INSTRUCTOR
+    type: string
+    nullable: false
+    inference:
+      confidence: high
+      reason: text_values
+    profile:
+      null_percentage: 0.0
+      possible_null_tokens: []
+      distinct_count: 21
+      cardinality_ratio: 0.4468
+      leading_zeros_detected: false
+      possible_key_candidate: false
+      observed_examples:
+      - Dr. Smith
+      - Dr. Lee
+      - Dr. Carter
+      - Dr. Nguyen
+      - Dr. Patel
+      string_length:
+        min: 5
+        max: 11
+        average: 9.0638
+transformations: []
+contracts: []
+schema_drift:
+  added_columns: warn
+  removed_columns: fail
+  datatype_change: fail
+  canonical_change: fail
+load:
+  strategy: full
+  connection_env: ETL_POSTGRES_DSN
+  schema: public
+  staging_table: term_course_staging
+  target_table: term_course
+orchestration:
+  enabled: true
+  schedule: null
+  retries: 0
+  retry_delay_minutes: 5
