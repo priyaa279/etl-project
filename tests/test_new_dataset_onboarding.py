@@ -901,13 +901,16 @@ def test_onboarding_state_is_persisted_separately_from_etl_truth(tmp_path: Path)
 
 
 class FakeOnboardingAirflow:
-    def __init__(self, *, discovered: bool = True) -> None:
+    def __init__(self, *, discovered: bool = True, discovery_delay_checks: int = 0) -> None:
         self.discovered = discovered
+        self.discovery_delay_checks = discovery_delay_checks
+        self.dag_checks = 0
         self.state = "QUEUED"
         self.triggers: list[dict[str, str]] = []
 
     def dag(self, dag_id: str) -> dict[str, object]:
-        if not self.discovered:
+        self.dag_checks += 1
+        if not self.discovered or self.dag_checks <= self.discovery_delay_checks:
             from metadata_etl_api.airflow_client import AirflowError
 
             raise AirflowError("not discovered")
@@ -957,7 +960,13 @@ def _git(repo: Path, *arguments: str) -> str:
     ).stdout.strip()
 
 
-def _approval_client(tmp_path: Path, *, discovered: bool = True):
+def _approval_client(
+    tmp_path: Path,
+    *,
+    discovered: bool = True,
+    discovery_delay_checks: int = 0,
+    discovery_timeout_seconds: float = 0,
+):
     repo_root = tmp_path / "approval-repo"
     (repo_root / "configs" / "drafts").mkdir(parents=True)
     (repo_root / "data" / "onboarding").mkdir(parents=True)
@@ -988,11 +997,15 @@ def _approval_client(tmp_path: Path, *, discovered: bool = True):
             "approved_source_root": repo_root / "data" / "sources",
             "approved_source_config_root": "data/sources",
             "airflow_source_root": "/opt/airflow/data/sources",
-            "airflow_discovery_timeout_seconds": 0,
+            "airflow_discovery_timeout_seconds": discovery_timeout_seconds,
+            "airflow_discovery_poll_seconds": 0.001,
         }
     )
     repository = MemoryOnboardingRepository()
-    airflow = FakeOnboardingAirflow(discovered=discovered)
+    airflow = FakeOnboardingAirflow(
+        discovered=discovered,
+        discovery_delay_checks=discovery_delay_checks,
+    )
     observability = FakeOnboardingObservability()
     service = OnboardingService(
         settings,
@@ -1210,6 +1223,28 @@ def test_activation_timeout_preserves_approval_and_can_retry(tmp_path: Path) -> 
     airflow.discovered = True
     retried = client.post(f"/api/onboarding/{onboarding_id}/activate")
     assert retried.json()["status"] == "READY_FOR_FIRST_RUN"
+
+
+def test_new_approved_config_is_discovered_after_application_startup(tmp_path: Path) -> None:
+    client, _, _, airflow, _, _ = _approval_client(
+        tmp_path,
+        discovery_delay_checks=2,
+        discovery_timeout_seconds=0.2,
+    )
+    onboarding_id, validated = _ready_for_approval(client)
+
+    approved = client.post(
+        f"/api/onboarding/{onboarding_id}/approve",
+        json={
+            "expected_hash": validated["validation"]["validated_hash"],
+            "approved_by": "Priya",
+            "acknowledged": True,
+        },
+    )
+
+    assert approved.json()["status"] == "READY_FOR_FIRST_RUN"
+    assert airflow.dag_checks == 3
+    assert airflow.triggers == []
 
 
 def test_git_commit_failure_rolls_back_promoted_config_and_source(

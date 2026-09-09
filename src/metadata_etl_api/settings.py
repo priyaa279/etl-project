@@ -25,6 +25,7 @@ class APISettings:
     airflow_username: str | None
     airflow_password: str | None
     airflow_token: str | None
+    airflow_password_file: Path | None = None
     onboarding_enabled: bool = False
     onboarding_root: Path = Path("data/onboarding")
     draft_config_dir: Path = Path("configs/drafts")
@@ -32,7 +33,7 @@ class APISettings:
     approved_source_root: Path = Path("data/sources")
     approved_source_config_root: str = "data/sources"
     airflow_source_root: str = "/opt/airflow/data/sources"
-    airflow_discovery_timeout_seconds: float = 20.0
+    airflow_discovery_timeout_seconds: float = 60.0
     airflow_discovery_poll_seconds: float = 1.0
     git_executable: str = "git"
     git_push_enabled: bool = False
@@ -54,6 +55,7 @@ class APISettings:
             max_bytes = int(max_bytes_value)
         except ValueError:
             max_bytes = 100 * 1024 * 1024
+        password_file = os.getenv("AIRFLOW_API_SIMPLE_AUTH_PASSWORDS_FILE")
         return cls(
             database_dsn=os.getenv("ETL_POSTGRES_DSN"),
             allowed_origins=origins,
@@ -66,6 +68,7 @@ class APISettings:
             airflow_username=os.getenv("AIRFLOW_API_USERNAME"),
             airflow_password=os.getenv("AIRFLOW_API_PASSWORD"),
             airflow_token=os.getenv("AIRFLOW_API_TOKEN"),
+            airflow_password_file=Path(password_file) if password_file else None,
             onboarding_enabled=_boolean("ETL_CONTROL_ONBOARDING_ENABLED"),
             onboarding_root=Path(os.getenv("ETL_ONBOARDING_ROOT", "data/onboarding")),
             draft_config_dir=Path(os.getenv("ETL_DRAFT_CONFIG_DIR", "configs/drafts")),
@@ -76,7 +79,7 @@ class APISettings:
             ).strip("/"),
             airflow_source_root=os.getenv("ETL_AIRFLOW_SOURCE_ROOT", "/opt/airflow/data/sources"),
             airflow_discovery_timeout_seconds=float(
-                os.getenv("ETL_AIRFLOW_DISCOVERY_TIMEOUT_SECONDS", "20")
+                os.getenv("ETL_AIRFLOW_DISCOVERY_TIMEOUT_SECONDS", "60")
             ),
             airflow_discovery_poll_seconds=float(
                 os.getenv("ETL_AIRFLOW_DISCOVERY_POLL_SECONDS", "1")

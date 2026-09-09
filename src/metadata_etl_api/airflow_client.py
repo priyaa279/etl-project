@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
@@ -17,6 +18,7 @@ class AirflowClient:
     username: str | None = None
     password: str | None = None
     token: str | None = None
+    password_file: Path | None = None
     timeout_seconds: float = 10
 
     def _request(
@@ -42,9 +44,10 @@ class AirflowClient:
     def _token(self) -> str:
         if self.token:
             return self.token
-        if self.username and self.password:
+        password = self._password()
+        if self.username and password:
             response = self._request(
-                "POST", "/auth/token", {"username": self.username, "password": self.password}
+                "POST", "/auth/token", {"username": self.username, "password": password}
             )
         else:
             raise AirflowError("Airflow API authentication is not configured")
@@ -53,6 +56,21 @@ class AirflowClient:
             raise AirflowError("Airflow API authentication failed")
         self.token = token
         return token
+
+    def _password(self) -> str | None:
+        """Resolve a server-side Simple Auth password without exposing it to the browser."""
+        if self.password:
+            return self.password
+        if not self.username or self.password_file is None:
+            return None
+        try:
+            passwords = json.loads(self.password_file.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise AirflowError("Airflow API authentication password file is unavailable") from exc
+        password = passwords.get(self.username) if isinstance(passwords, dict) else None
+        if not isinstance(password, str) or not password:
+            raise AirflowError("Airflow API authentication password is not configured")
+        return password
 
     def trigger(
         self,

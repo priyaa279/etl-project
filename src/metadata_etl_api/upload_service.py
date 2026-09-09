@@ -61,6 +61,7 @@ class UploadService:
                 username=settings.airflow_username,
                 password=settings.airflow_password,
                 token=settings.airflow_token,
+                password_file=settings.airflow_password_file,
             ),
         )
 

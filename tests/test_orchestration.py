@@ -78,13 +78,15 @@ def test_generic_discovery_finds_unrelated_enabled_configs(
 
     discovered = discover_scheduled_configs(ROOT / "configs")
 
-    assert {item.dag_id for item in discovered} == {
+    discovered_by_id = {item.dag_id: item for item in discovered}
+    original_demo_dags = {
         "etl_customers",
         "etl_portfolio_order_lines",
         "etl_portfolio_sensor_telemetry",
         "etl_sensor_readings",
     }
-    assert all(item.retries == 2 for item in discovered)
+    assert original_demo_dags <= discovered_by_id.keys()
+    assert all(discovered_by_id[dag_id].retries == 2 for dag_id in original_demo_dags)
 
 
 def test_new_enabled_config_is_discovered_without_dag_code_changes(

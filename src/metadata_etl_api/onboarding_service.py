@@ -81,6 +81,7 @@ class OnboardingService:
             username=settings.airflow_username,
             password=settings.airflow_password,
             token=settings.airflow_token,
+            password_file=settings.airflow_password_file,
         )
         self.observability = observability or ObservabilityRepository(settings.database_dsn)
         self.git = git or GitConfigAdapter(
