@@ -1,0 +1,217 @@
+config_schema_version: '1.0'
+dataset:
+  name: term_student
+review:
+  required: true
+  approved: true
+  approved_by: p
+onboarding:
+  generated_at: '2026-09-09T01:42:39.833494+00:00'
+  rows_scanned: 20
+  rows_profiled: 20
+  sample_size_requested: 10000
+  exact_duplicate_count: 0
+  nested_fields: []
+  note: Duplicates are reported only; no deduplication is configured automatically.
+source:
+  type: csv
+  path: data/sources/term_student/source.csv
+  options:
+    delimiter: ','
+runtime:
+  raw_root: data/raw
+normalization:
+  trim_strings: true
+  null_tokens: []
+columns:
+  term:
+    source: TERM
+    type: string
+    nullable: false
+    inference:
+      confidence: high
+      reason: text_values
+    profile:
+      null_percentage: 0.0
+      possible_null_tokens: []
+      distinct_count: 1
+      cardinality_ratio: 0.05
+      leading_zeros_detected: false
+      possible_key_candidate: false
+      observed_examples:
+      - Fall 2025
+      string_length:
+        min: 9
+        max: 9
+        average: 9
+  student_id:
+    source: STUDENT_ID
+    type: integer
+    nullable: false
+    inference:
+      confidence: high
+      reason: integer_pattern
+    profile:
+      null_percentage: 0.0
+      possible_null_tokens: []
+      distinct_count: 20
+      cardinality_ratio: 1.0
+      leading_zeros_detected: false
+      possible_key_candidate: true
+      observed_examples:
+      - '100001'
+      - '100002'
+      - '100003'
+      - '100004'
+      - '100005'
+      numeric_min: '100001'
+      numeric_max: '100020'
+  student_type:
+    source: STUDENT_TYPE
+    type: string
+    nullable: false
+    inference:
+      confidence: high
+      reason: text_values
+    profile:
+      null_percentage: 0.0
+      possible_null_tokens: []
+      distinct_count: 3
+      cardinality_ratio: 0.15
+      leading_zeros_detected: false
+      possible_key_candidate: false
+      observed_examples:
+      - UG Degree-Seeking
+      - Graduate
+      - UG Non-Degree
+      string_length:
+        min: 8
+        max: 17
+        average: 13.45
+  level:
+    source: LEVEL
+    type: string
+    nullable: false
+    inference:
+      confidence: high
+      reason: text_values
+    profile:
+      null_percentage: 0.0
+      possible_null_tokens: []
+      distinct_count: 3
+      cardinality_ratio: 0.15
+      leading_zeros_detected: false
+      possible_key_candidate: false
+      observed_examples:
+      - Undergraduate
+      - Masters
+      - Doctoral
+      string_length:
+        min: 7
+        max: 13
+        average: 11
+  program:
+    source: PROGRAM
+    type: string
+    nullable: false
+    inference:
+      confidence: high
+      reason: text_values
+    profile:
+      null_percentage: 0.0
+      possible_null_tokens: []
+      distinct_count: 20
+      cardinality_ratio: 1.0
+      leading_zeros_detected: false
+      possible_key_candidate: true
+      observed_examples:
+      - Biology BS
+      - Computer Science BS
+      - MBA
+      - Non-Degree
+      - Counseling MS
+      string_length:
+        min: 3
+        max: 19
+        average: 12.55
+  full_part_time:
+    source: FULL_PART_TIME
+    type: string
+    nullable: false
+    inference:
+      confidence: high
+      reason: text_values
+    profile:
+      null_percentage: 0.0
+      possible_null_tokens: []
+      distinct_count: 2
+      cardinality_ratio: 0.1
+      leading_zeros_detected: false
+      possible_key_candidate: false
+      observed_examples:
+      - Full-Time
+      - Part-Time
+      string_length:
+        min: 9
+        max: 9
+        average: 9
+  residency:
+    source: RESIDENCY
+    type: string
+    nullable: false
+    inference:
+      confidence: high
+      reason: text_values
+    profile:
+      null_percentage: 0.0
+      possible_null_tokens: []
+      distinct_count: 2
+      cardinality_ratio: 0.1
+      leading_zeros_detected: false
+      possible_key_candidate: false
+      observed_examples:
+      - In-State
+      - Out-of-State
+      string_length:
+        min: 8
+        max: 12
+        average: 9.2
+  cohort_year:
+    source: COHORT_YEAR
+    type: integer
+    nullable: false
+    inference:
+      confidence: high
+      reason: integer_pattern
+    profile:
+      null_percentage: 0.0
+      possible_null_tokens: []
+      distinct_count: 4
+      cardinality_ratio: 0.2
+      leading_zeros_detected: false
+      possible_key_candidate: false
+      observed_examples:
+      - '2025'
+      - '2024'
+      - '2023'
+      - '2022'
+      numeric_min: '2022'
+      numeric_max: '2025'
+transformations: []
+contracts: []
+schema_drift:
+  added_columns: warn
+  removed_columns: fail
+  datatype_change: fail
+  canonical_change: fail
+load:
+  strategy: full
+  connection_env: ETL_POSTGRES_DSN
+  schema: public
+  staging_table: term_student_staging
+  target_table: term_student
+orchestration:
+  enabled: true
+  schedule: null
+  retries: 0
+  retry_delay_minutes: 5
