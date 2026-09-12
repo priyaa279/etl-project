@@ -39,6 +39,7 @@ class APISettings:
     git_push_enabled: bool = False
     git_remote: str = "origin"
     git_branch: str = "main"
+    trusted_data_preview_enabled: bool = False
 
     @classmethod
     def from_environment(cls) -> APISettings:
@@ -88,4 +89,5 @@ class APISettings:
             git_push_enabled=_boolean("ETL_CONTROL_GIT_PUSH_ENABLED"),
             git_remote=os.getenv("ETL_GIT_REMOTE", "origin"),
             git_branch=os.getenv("ETL_GIT_BRANCH", "main"),
+            trusted_data_preview_enabled=_boolean("ETL_CONTROL_TRUSTED_DATA_PREVIEW_ENABLED"),
         )

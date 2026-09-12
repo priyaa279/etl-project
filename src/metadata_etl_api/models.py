@@ -139,6 +139,40 @@ class DatasetWatermarkResponse(BaseModel):
     watermark: WatermarkState | None
 
 
+class TrustedDataColumn(BaseModel):
+    name: str
+    data_type: str
+    classification: str | None
+    redacted: bool
+
+
+class TrustedDataPreview(BaseModel):
+    dataset: str
+    target: str
+    state: Literal["AVAILABLE", "EMPTY", "NOT_PUBLISHED"]
+    columns: list[TrustedDataColumn]
+    rows: list[dict[str, Any]]
+    total_rows: int
+    limit: int
+    offset: int
+    has_more: bool
+    latest_successful_run_id: str | None
+    last_updated: datetime | None
+
+
+class PipelineTransformation(BaseModel):
+    position: int
+    id: str
+    type: Literal["cast", "filter", "derive", "map", "deduplicate"]
+    details: dict[str, Any]
+
+
+class PipelineSummary(BaseModel):
+    dataset: str
+    label: Literal["Current Transformation Plan"]
+    transformations: list[PipelineTransformation]
+
+
 class DatasetUploadCapability(BaseModel):
     dataset: str
     source_type: str

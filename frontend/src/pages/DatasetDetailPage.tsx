@@ -1,7 +1,7 @@
-import { ArrowLeft, Database, Droplets, GitCompareArrows, Upload } from "lucide-react";
-import { useCallback, useState } from "react";
+import { ArrowLeft, Database, Droplets, GitCompareArrows, LockKeyhole, Upload } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { api } from "../api/client";
+import { ApiError, api } from "../api/client";
 import { DetailGrid } from "../components/DetailGrid";
 import { PageHeader, SectionHeader } from "../components/PageHeader";
 import { EmptyState, ErrorState, LoadingState } from "../components/PageState";
@@ -13,13 +13,16 @@ import type {
   DatasetSummary,
   DatasetUploadCapability,
   DatasetWatermarkResponse,
+  PipelineSummary,
+  PipelineTransformation,
   QualitySummary,
   RunDetail,
   SchemaDriftEvent,
+  TrustedDataPreview,
 } from "../types/api";
 import { formatDateTime, formatDuration, formatLabel, formatNumber, shortHash } from "../utils/format";
 
-type Tab = "overview" | "runs" | "quality" | "schema" | "watermark";
+type Tab = "overview" | "runs" | "quality" | "schema" | "watermark" | "trusted";
 
 interface DatasetDetailData {
   detail: DatasetSummary;
@@ -28,6 +31,7 @@ interface DatasetDetailData {
   drift: SchemaDriftEvent[];
   watermark: DatasetWatermarkResponse;
   uploadCapability: DatasetUploadCapability;
+  pipelineSummary: PipelineSummary | null;
 }
 
 const tabs: { id: Tab; label: string }[] = [
@@ -36,19 +40,65 @@ const tabs: { id: Tab; label: string }[] = [
   { id: "quality", label: "Quality" },
   { id: "schema", label: "Schema" },
   { id: "watermark", label: "Watermark" },
+  { id: "trusted", label: "Trusted Data" },
 ];
+
+const previewLimit = 25;
+
+function detailRows(transformation: PipelineTransformation): [string, string][] {
+  const details = transformation.details;
+  if (transformation.type === "cast") {
+    return [["Column", String(details.column)], ["Datatype", String(details.datatype)]];
+  }
+  if (transformation.type === "filter") {
+    return [["Condition", String(details.condition)]];
+  }
+  if (transformation.type === "derive") {
+    return [
+      ["Target", String(details.target_column)],
+      ["Datatype", String(details.datatype)],
+      ["Expression", String(details.expression)],
+    ];
+  }
+  if (transformation.type === "map") {
+    const mappings = Object.entries((details.mappings ?? {}) as Record<string, unknown>)
+      .map(([source, target]) => `${source} → ${String(target)}`)
+      .join(", ");
+    return [["Column", String(details.column)], ["Mappings", mappings]];
+  }
+  const order = Object.entries((details.order_by ?? {}) as Record<string, unknown>)
+    .map(([column, direction]) => `${column} ${String(direction).toUpperCase()}`)
+    .join(", ");
+  return [
+    ["Keys", ((details.keys ?? []) as unknown[]).map(String).join(", ")],
+    ["Order", order],
+  ];
+}
+
+function displayValue(value: unknown): string {
+  if (value === null) return "NULL";
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
 
 export function DatasetDetailPage() {
   const { dataset = "" } = useParams();
   const [tab, setTab] = useState<Tab>("overview");
+  const [trustedOffset, setTrustedOffset] = useState(0);
+  const [trustedData, setTrustedData] = useState<TrustedDataPreview | null>(null);
+  const [trustedError, setTrustedError] = useState<{ message: string; disabled: boolean } | null>(null);
+  const [trustedLoading, setTrustedLoading] = useState(false);
+  const [trustedRevision, setTrustedRevision] = useState(0);
   const loader = useCallback(async (): Promise<DatasetDetailData> => {
-    const [detail, runs, quality, drift, watermark, uploadCapability] = await Promise.all([
+    const [detail, runs, quality, drift, watermark, uploadCapability, pipelineSummary] = await Promise.all([
       api.dataset(dataset),
       api.datasetRuns(dataset),
       api.datasetQuality(dataset),
       api.datasetSchemaDrift(dataset),
       api.datasetWatermark(dataset),
       api.datasetUploadCapability(dataset).catch(() => null),
+      api.pipelineSummary(dataset).catch(() => null),
     ]);
     return {
       detail,
@@ -64,9 +114,40 @@ export function DatasetDetailPage() {
         upload_eligible: false,
         reason: "Operational upload is not available for this dataset.",
       },
+      pipelineSummary,
     };
   }, [dataset]);
   const { data, error, loading, reload } = useApi(loader);
+
+  useEffect(() => {
+    if (tab !== "trusted") return undefined;
+    let active = true;
+    Promise.resolve()
+      .then(() => {
+        if (active) {
+          setTrustedLoading(true);
+          setTrustedError(null);
+        }
+        return api.trustedData(dataset, previewLimit, trustedOffset);
+      })
+      .then((result) => {
+        if (active) setTrustedData(result);
+      })
+      .catch((reason: unknown) => {
+        if (!active) return;
+        setTrustedData(null);
+        setTrustedError({
+          message: reason instanceof Error ? reason.message : "Unable to load trusted data.",
+          disabled: reason instanceof ApiError && reason.status === 403,
+        });
+      })
+      .finally(() => {
+        if (active) setTrustedLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [dataset, tab, trustedOffset, trustedRevision]);
 
   return (
     <>
@@ -77,7 +158,7 @@ export function DatasetDetailPage() {
       <PageHeader
         eyebrow="Dataset detail"
         title={dataset}
-        description="Current operational state, execution history, quality, schema, and watermark metadata."
+        description="Current operational state, execution history, quality, schema, watermark metadata, and published trusted output."
         action={data ? (
           <div className="flex flex-wrap items-center gap-3">
             <StatusBadge status={data.detail.health_status} />
@@ -138,6 +219,37 @@ export function DatasetDetailPage() {
                   <SectionHeader title="Latest run" description="Most recent recorded execution for this dataset." />
                   {data.runs.length ? <RunsTable runs={data.runs.slice(0, 1)} /> : <EmptyState title="No runs recorded" message="This dataset has no execution history." />}
                 </div>
+                <div className="panel p-5">
+                  <SectionHeader
+                    title="Current Transformation Plan"
+                    description="Approved transformations currently configured for future executions, shown in execution order. This is not a historical reconstruction of an earlier run."
+                  />
+                  {data.pipelineSummary === null ? (
+                    <p className="text-sm text-slate-500">The current transformation plan is temporarily unavailable.</p>
+                  ) : data.pipelineSummary.transformations.length ? (
+                    <ol className="grid gap-3">
+                      {data.pipelineSummary.transformations.map((transformation) => (
+                        <li key={transformation.id} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="example-chip">{transformation.position}</span>
+                            <h3 className="font-bold text-slate-900">{formatLabel(transformation.type)}</h3>
+                            <span className="font-mono text-xs text-slate-500">{transformation.id}</span>
+                          </div>
+                          <dl className="mt-3 grid gap-2 text-sm md:grid-cols-2">
+                            {detailRows(transformation).map(([label, value]) => (
+                              <div key={label} className="min-w-0">
+                                <dt className="font-semibold text-slate-500">{label}</dt>
+                                <dd className="mt-0.5 break-words font-mono text-xs text-slate-800">{value}</dd>
+                              </div>
+                            ))}
+                          </dl>
+                        </li>
+                      ))}
+                    </ol>
+                  ) : (
+                    <p className="text-sm text-slate-500">No transformations are configured. Records proceed from approved normalization to quality checks.</p>
+                  )}
+                </div>
               </div>
             )}
 
@@ -189,6 +301,74 @@ export function DatasetDetailPage() {
                   ]} />
                 </div>
               ) : <EmptyState title="No watermark exists for this dataset" message="Watermarks apply only to configured incremental datasets." />
+            )}
+
+            {tab === "trusted" && (
+              <div className="space-y-6">
+                <div>
+                  <SectionHeader
+                    title="Trusted Data"
+                    description="Validated records currently published for downstream consumption. These records passed the configured transformation and data-quality pipeline before publication."
+                  />
+                  <div className="info-panel flex items-start gap-3" role="note">
+                    <LockKeyhole className="mt-0.5 h-5 w-5 shrink-0" aria-hidden="true" />
+                    <p>This is a read-only inspection of the current trusted output, not an analytics workspace. Classified PII and restricted values are suppressed.</p>
+                  </div>
+                </div>
+                {trustedLoading && <LoadingState label="Loading trusted records" />}
+                {trustedError?.disabled && (
+                  <div className="info-panel" role="note">{trustedError.message} Enable it only in a trusted local environment.</div>
+                )}
+                {trustedError && !trustedError.disabled && (
+                  <ErrorState message={trustedError.message} onRetry={() => setTrustedRevision((value) => value + 1)} />
+                )}
+                {!trustedLoading && !trustedError && trustedData && (
+                  <DetailGrid items={[
+                    { label: "Dataset", value: trustedData.dataset },
+                    { label: "Target", value: <span className="font-mono text-xs">{trustedData.target}</span> },
+                    { label: "Rows", value: formatNumber(trustedData.total_rows) },
+                    { label: "Last updated", value: formatDateTime(trustedData.last_updated) },
+                  ]} />
+                )}
+                {!trustedLoading && !trustedError && trustedData?.state === "NOT_PUBLISHED" && (
+                  <EmptyState title="No trusted output has been published for this dataset yet" message="Run the approved pipeline successfully before inspecting trusted records." />
+                )}
+                {!trustedLoading && !trustedError && trustedData?.state === "EMPTY" && (
+                  <EmptyState title="No trusted records are currently published" message="The trusted target exists and currently contains zero rows." />
+                )}
+                {!trustedLoading && !trustedError && trustedData?.state === "AVAILABLE" && (
+                  <>
+                    {trustedData.latest_successful_run_id && (
+                      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-4">
+                        <div><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Latest successful run</p><p className="mt-1 font-mono text-sm text-slate-800">{trustedData.latest_successful_run_id}</p></div>
+                        <Link className="secondary-button" to={`/runs/${encodeURIComponent(trustedData.latest_successful_run_id)}`}>View Run Details</Link>
+                      </div>
+                    )}
+                    <div className="table-shell" data-testid="trusted-data-table-container">
+                      <table className="data-table trusted-data-table">
+                        <caption className="sr-only">Trusted data for {dataset}</caption>
+                        <thead><tr>{trustedData.columns.map((column) => <th key={column.name} scope="col" title={column.classification ? `Classification: ${column.classification}` : undefined}>{column.name}{column.redacted && <span className="ml-2 text-amber-700">Protected</span>}</th>)}</tr></thead>
+                        <tbody>{trustedData.rows.map((row, rowIndex) => <tr key={`${trustedData.offset}-${rowIndex}`}>{trustedData.columns.map((column) => {
+                          const rendered = column.redacted ? "REDACTED" : displayValue(row[column.name]);
+                          return <td key={column.name}><span className={column.redacted ? "text-xs font-bold text-amber-700" : row[column.name] === null ? "text-xs italic text-slate-400" : "trusted-cell"} title={rendered}>{rendered}</span></td>;
+                        })}</tr>)}</tbody>
+                      </table>
+                    </div>
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <p className="text-sm text-slate-600">Showing {trustedData.offset + 1}–{Math.min(trustedData.offset + trustedData.rows.length, trustedData.total_rows)} of {trustedData.total_rows}</p>
+                      <div className="flex gap-2">
+                        <button type="button" className="secondary-button" disabled={trustedData.offset === 0} onClick={() => setTrustedOffset(Math.max(0, trustedData.offset - trustedData.limit))}>Previous</button>
+                        <button type="button" className="secondary-button" disabled={!trustedData.has_more} onClick={() => setTrustedOffset(trustedData.offset + trustedData.limit)}>Next</button>
+                      </div>
+                    </div>
+                    <div className="panel p-5">
+                      <SectionHeader title="Using this dataset" description="The trusted layer is designed for controlled downstream consumption." />
+                      <p className="text-sm text-slate-600">Trusted target: <span className="font-mono text-xs text-slate-800">{trustedData.target}</span></p>
+                      <p className="mt-2 text-sm text-slate-600">Typical consumers include SQL analytics, Power BI, Tableau, and downstream applications using separately managed access.</p>
+                    </div>
+                  </>
+                )}
+              </div>
             )}
           </section>
         </div>

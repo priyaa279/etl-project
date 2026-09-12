@@ -78,6 +78,26 @@ default; when explicitly enabled, the restricted adapter can push only `HEAD` to
 fixed remote and branch. Browser input can never choose a repository, path, remote, branch, or Git
 command.
 
+### Trusted data preview
+
+Dataset Detail includes a **Current Transformation Plan** derived from the current approved YAML
+and a **Trusted Data** tab for inspecting the rows currently published in the configured PostgreSQL
+target. The preview accepts only a logical approved dataset name, resolves the target server-side,
+uses read-only transactions, suppresses `pii` and `restricted` values, and returns at most 100 rows
+per request with a default page size of 25. It never accepts SQL, schema names, table names, or sort
+expressions from the browser, and it does not rerun ETL transformations.
+Pages are ordered deterministically by configured load keys when available, followed by the
+remaining trusted-result columns as generic tie-breakers; this preview order does not imply business
+ranking. The exact row count is intentionally simple for this local project scale.
+
+Row-level preview is disabled by default with
+`ETL_CONTROL_TRUSTED_DATA_PREVIEW_ENABLED=false`. Enable it only in a trusted local environment
+until authentication and authorization are implemented. The preview is for inspection, not an
+analytics replacement. Downstream consumers such as Power BI, Tableau, SQL clients, and
+applications should connect to the trusted PostgreSQL layer through separately controlled access.
+The transformation plan describes the current approved configuration; it does not claim to
+reconstruct the exact configuration used by a historical run.
+
 The upload landing area is temporary application input, not ETL evidence. Once Airflow invokes the
 CLI with `--source-override`, the normal connector preserves a separate immutable raw artifact.
 Preflight is also only a preview: the real ETL run recalculates schema drift and enforces the

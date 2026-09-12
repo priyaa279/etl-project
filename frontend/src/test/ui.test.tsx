@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { api } from "../api/client";
+import { ApiError, api } from "../api/client";
 import { StatusBadge } from "../components/StatusBadge";
 import { DatasetDetailPage } from "../pages/DatasetDetailPage";
 import { DatasetsPage } from "../pages/DatasetsPage";
@@ -13,7 +13,9 @@ import type {
   DatasetSummary,
   DatasetUploadCapability,
   Overview,
+  PipelineSummary,
   RunDetail,
+  TrustedDataPreview,
   UploadOperation,
 } from "../types/api";
 import { formatLabel, shortRunId } from "../utils/format";
@@ -87,6 +89,64 @@ const capability: DatasetUploadCapability = {
   upload_eligible: true,
   reason: null,
 };
+
+const pipelineSummary: PipelineSummary = {
+  dataset: "customers",
+  label: "Current Transformation Plan",
+  transformations: [
+    {
+      position: 1,
+      id: "T001",
+      type: "map",
+      details: { column: "status", mappings: { A: "ACTIVE", I: "INACTIVE" } },
+    },
+    {
+      position: 2,
+      id: "T002",
+      type: "derive",
+      details: {
+        target_column: "customer_label",
+        datatype: "string",
+        expression: "customer_id || '-' || status",
+      },
+    },
+  ],
+};
+
+const trustedPreview: TrustedDataPreview = {
+  dataset: "customers",
+  target: "public.customers",
+  state: "AVAILABLE",
+  columns: [
+    { name: "customer_id", data_type: "text", classification: null, redacted: false },
+    { name: "note", data_type: "text", classification: null, redacted: false },
+    { name: "email", data_type: "text", classification: "pii", redacted: true },
+  ],
+  rows: [{ customer_id: "00123", note: null, email: null }],
+  total_rows: 1,
+  limit: 25,
+  offset: 0,
+  has_more: false,
+  latest_successful_run_id: "RUN_001",
+  last_updated: "2026-09-07T10:00:01Z",
+};
+
+function mockDatasetDetail(summary: PipelineSummary | null = pipelineSummary) {
+  vi.spyOn(api, "dataset").mockResolvedValue(dataset);
+  vi.spyOn(api, "datasetRuns").mockResolvedValue([run]);
+  vi.spyOn(api, "datasetQuality").mockResolvedValue([]);
+  vi.spyOn(api, "datasetSchemaDrift").mockResolvedValue([]);
+  vi.spyOn(api, "datasetWatermark").mockResolvedValue({ dataset: "customers", watermark: null });
+  vi.spyOn(api, "datasetUploadCapability").mockResolvedValue(capability);
+  vi.spyOn(api, "pipelineSummary").mockResolvedValue(summary ?? { ...pipelineSummary, transformations: [] });
+}
+
+function renderDatasetDetail() {
+  return renderAt(
+    <Routes><Route path="/datasets/:dataset" element={<DatasetDetailPage />} /></Routes>,
+    "/datasets/customers",
+  );
+}
 
 const uploadOperation: UploadOperation = {
   upload_id: "upload-123",
@@ -251,6 +311,119 @@ it("keeps read-only dataset detail available when upload capability is unavailab
   expect(screen.getByText("Operational upload is not available for this dataset.")).toBeInTheDocument();
   expect(screen.queryByRole("link", { name: "Upload new data" })).not.toBeInTheDocument();
   expect(screen.getByRole("tab", { name: "Runs" })).toBeInTheDocument();
+});
+
+it("shows the current approved transformation plan in execution order", async () => {
+  mockDatasetDetail();
+
+  renderDatasetDetail();
+
+  expect(await screen.findByText("Current Transformation Plan")).toBeInTheDocument();
+  expect(screen.getByText("Map")).toBeInTheDocument();
+  expect(screen.getByText("A → ACTIVE, I → INACTIVE")).toBeInTheDocument();
+  expect(screen.getByText("Derive")).toBeInTheDocument();
+  expect(screen.getByText("customer_label")).toBeInTheDocument();
+  expect(screen.getByText(/not a historical reconstruction/i)).toBeInTheDocument();
+});
+
+it("renders actual trusted rows, leading zeros, NULL, privacy, and run navigation", async () => {
+  mockDatasetDetail();
+  vi.spyOn(api, "trustedData").mockResolvedValue(trustedPreview);
+  const user = userEvent.setup();
+  renderDatasetDetail();
+
+  await user.click(await screen.findByRole("tab", { name: "Trusted Data" }));
+
+  expect(await screen.findByText("00123")).toBeInTheDocument();
+  expect(screen.getByText("NULL")).toBeInTheDocument();
+  expect(screen.getByText("REDACTED")).toBeInTheDocument();
+  expect(screen.getAllByText("public.customers")).toHaveLength(2);
+  expect(screen.getByTestId("trusted-data-table-container")).toHaveClass("table-shell");
+  expect(screen.getByRole("link", { name: "View Run Details" })).toHaveAttribute("href", "/runs/RUN_001");
+  expect(screen.getByRole("button", { name: "Previous" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+});
+
+it("shows trusted-data loading and advances through server-side pages", async () => {
+  mockDatasetDetail();
+  const firstRows = Array.from({ length: 25 }, (_, index) => ({
+    customer_id: String(index + 1).padStart(5, "0"),
+    note: null,
+    email: null,
+  }));
+  let resolveFirstPage: ((value: TrustedDataPreview) => void) | undefined;
+  const firstPage = new Promise<TrustedDataPreview>((resolve) => {
+    resolveFirstPage = resolve;
+  });
+  const trusted = vi.spyOn(api, "trustedData")
+    .mockReturnValueOnce(firstPage)
+    .mockResolvedValueOnce({
+      ...trustedPreview,
+      rows: [{ customer_id: "00026", note: "last", email: null }],
+      total_rows: 26,
+      offset: 25,
+      has_more: false,
+    });
+  const user = userEvent.setup();
+  renderDatasetDetail();
+
+  await user.click(await screen.findByRole("tab", { name: "Trusted Data" }));
+  expect(screen.getByRole("status")).toHaveTextContent("Loading trusted records");
+  resolveFirstPage?.({ ...trustedPreview, rows: firstRows, total_rows: 26, has_more: true });
+  expect(await screen.findByText("Showing 1–25 of 26")).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Next" }));
+
+  expect(await screen.findByText("00026")).toBeInTheDocument();
+  expect(screen.getByText("Showing 26–26 of 26")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Previous" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+  expect(trusted).toHaveBeenLastCalledWith("customers", 25, 25);
+});
+
+it("shows the conservative feature-disabled state", async () => {
+  mockDatasetDetail();
+  vi.spyOn(api, "trustedData").mockRejectedValue(
+    new ApiError("Trusted data preview is disabled in this environment.", 403),
+  );
+  const user = userEvent.setup();
+  renderDatasetDetail();
+
+  await user.click(await screen.findByRole("tab", { name: "Trusted Data" }));
+
+  expect(await screen.findByText(/preview is disabled/i)).toBeInTheDocument();
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+it.each([
+  ["EMPTY", "No trusted records are currently published"],
+  ["NOT_PUBLISHED", "No trusted output has been published for this dataset yet"],
+] as const)("renders the %s trusted-data state", async (state, message) => {
+  mockDatasetDetail();
+  vi.spyOn(api, "trustedData").mockResolvedValue({
+    ...trustedPreview,
+    state,
+    rows: [],
+    total_rows: 0,
+    latest_successful_run_id: state === "EMPTY" ? "RUN_001" : null,
+  });
+  const user = userEvent.setup();
+  renderDatasetDetail();
+
+  await user.click(await screen.findByRole("tab", { name: "Trusted Data" }));
+
+  expect(await screen.findByText(message)).toBeInTheDocument();
+});
+
+it("renders a safe trusted-data API error with retry", async () => {
+  mockDatasetDetail();
+  vi.spyOn(api, "trustedData").mockRejectedValue(new Error("Trusted data is temporarily unavailable."));
+  const user = userEvent.setup();
+  renderDatasetDetail();
+
+  await user.click(await screen.findByRole("tab", { name: "Trusted Data" }));
+
+  expect(await screen.findByRole("alert")).toHaveTextContent("Trusted data is temporarily unavailable.");
+  expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
 });
 
 it("selects, uploads, validates READY, and triggers an existing dataset run", async () => {

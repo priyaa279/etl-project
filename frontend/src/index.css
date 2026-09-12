@@ -152,6 +152,25 @@ select:focus-visible {
   min-width: 1120px;
 }
 
+.trusted-data-table {
+  width: max-content;
+  min-width: 100%;
+}
+
+.trusted-data-table th,
+.trusted-data-table td {
+  min-width: 10rem;
+  max-width: 20rem;
+}
+
+.trusted-cell {
+  display: block;
+  max-width: 20rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .data-table th {
   border-bottom: 1px solid #dbe3ed;
   background: #f8fafc;
@@ -262,6 +281,11 @@ select:focus-visible {
   font-size: 0.875rem;
   font-weight: 700;
   cursor: pointer;
+}
+
+.secondary-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .icon-button {

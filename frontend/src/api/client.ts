@@ -15,7 +15,9 @@ import type {
   OnboardingCompletion,
   OnboardingReview,
   OnboardingSession,
+  PipelineSummary,
   SchemaDecision,
+  TrustedDataPreview,
 } from "../types/api";
 
 const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
@@ -62,6 +64,14 @@ export const api = {
   datasets: () => request<DatasetSummary[]>("/api/datasets"),
   dataset: (dataset: string) =>
     request<DatasetSummary>(`/api/datasets/${encodeURIComponent(dataset)}`),
+  trustedData: (dataset: string, limit = 25, offset = 0) =>
+    request<TrustedDataPreview>(
+      `/api/datasets/${encodeURIComponent(dataset)}/trusted-data${query({ limit, offset })}`,
+    ),
+  pipelineSummary: (dataset: string) =>
+    request<PipelineSummary>(
+      `/api/datasets/${encodeURIComponent(dataset)}/pipeline-summary`,
+    ),
   datasetUploadCapability: (dataset: string) =>
     request<DatasetUploadCapability>(
       `/api/datasets/${encodeURIComponent(dataset)}/upload-capability`,

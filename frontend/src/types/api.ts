@@ -127,6 +127,40 @@ export interface DatasetWatermarkResponse {
   watermark: WatermarkState | null;
 }
 
+export interface TrustedDataColumn {
+  name: string;
+  data_type: string;
+  classification: string | null;
+  redacted: boolean;
+}
+
+export interface TrustedDataPreview {
+  dataset: string;
+  target: string;
+  state: "AVAILABLE" | "EMPTY" | "NOT_PUBLISHED";
+  columns: TrustedDataColumn[];
+  rows: Record<string, unknown>[];
+  total_rows: number;
+  limit: number;
+  offset: number;
+  has_more: boolean;
+  latest_successful_run_id: string | null;
+  last_updated: string | null;
+}
+
+export interface PipelineTransformation {
+  position: number;
+  id: string;
+  type: "cast" | "filter" | "derive" | "map" | "deduplicate";
+  details: Record<string, unknown>;
+}
+
+export interface PipelineSummary {
+  dataset: string;
+  label: "Current Transformation Plan";
+  transformations: PipelineTransformation[];
+}
+
 export interface DatasetUploadCapability {
   dataset: string;
   source_type: string;

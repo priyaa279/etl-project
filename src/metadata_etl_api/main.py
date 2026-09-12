@@ -23,11 +23,13 @@ from metadata_etl_api.models import (
     OnboardingReview,
     OnboardingSession,
     OverviewResponse,
+    PipelineSummary,
     QualityOverview,
     QualitySummary,
     RunDetail,
     SchemaDecision,
     SchemaDriftEvent,
+    TrustedDataPreview,
     UploadOperation,
     WatermarkState,
 )
@@ -36,6 +38,12 @@ from metadata_etl_api.onboarding_service import OnboardingError, OnboardingServi
 from metadata_etl_api.operations import OperationsError
 from metadata_etl_api.repository import ObservabilityRepository, RepositoryError
 from metadata_etl_api.settings import APISettings
+from metadata_etl_api.trusted_data import (
+    DEFAULT_PREVIEW_LIMIT,
+    MAX_PREVIEW_LIMIT,
+    TrustedDataError,
+    TrustedDataService,
+)
 from metadata_etl_api.upload_service import UploadOperationError, UploadService
 
 
@@ -68,6 +76,16 @@ def _onboarding_service(request: Request) -> OnboardingService:
 
 
 Onboarding = Annotated[OnboardingService, Depends(_onboarding_service)]
+
+
+def _trusted_data_service(request: Request) -> TrustedDataService:
+    configured = getattr(request.app.state, "trusted_data_service", None)
+    if configured is not None:
+        return configured
+    return TrustedDataService.from_settings(request.app.state.settings)
+
+
+TrustedData = Annotated[TrustedDataService, Depends(_trusted_data_service)]
 RunStatusFilter = Literal["SUCCEEDED", "FAILED", "RUNNING"]
 LoadStrategyFilter = Literal["full", "incremental", "upsert", "scd2"]
 
@@ -89,6 +107,7 @@ def create_app() -> FastAPI:
     application.state.settings = settings
     application.state.upload_service = UploadService.from_settings(settings)
     application.state.onboarding_service = OnboardingService.from_settings(settings)
+    application.state.trusted_data_service = TrustedDataService.from_settings(settings)
 
     @application.exception_handler(RepositoryError)
     async def repository_error_handler(_request: Request, _exc: RepositoryError) -> JSONResponse:
@@ -121,6 +140,10 @@ def create_app() -> FastAPI:
             content={"detail": "Onboarding state is temporarily unavailable."},
         )
 
+    @application.exception_handler(TrustedDataError)
+    async def trusted_data_error_handler(_request: Request, exc: TrustedDataError) -> JSONResponse:
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
     @application.get("/api/health", response_model=HealthResponse, tags=["system"])
     def health() -> HealthResponse:
         return HealthResponse(status="ok")
@@ -139,6 +162,27 @@ def create_app() -> FastAPI:
         if result is None:
             raise HTTPException(status_code=404, detail="Dataset not found.")
         return result
+
+    @application.get(
+        "/api/datasets/{dataset}/trusted-data",
+        response_model=TrustedDataPreview,
+        tags=["datasets"],
+    )
+    def trusted_data_preview(
+        dataset: str,
+        trusted_data: TrustedData,
+        limit: Annotated[int, Query(ge=1, le=MAX_PREVIEW_LIMIT)] = DEFAULT_PREVIEW_LIMIT,
+        offset: Annotated[int, Query(ge=0)] = 0,
+    ) -> dict[str, object]:
+        return trusted_data.preview(dataset, limit=limit, offset=offset)
+
+    @application.get(
+        "/api/datasets/{dataset}/pipeline-summary",
+        response_model=PipelineSummary,
+        tags=["datasets"],
+    )
+    def pipeline_summary(dataset: str, trusted_data: TrustedData) -> dict[str, object]:
+        return trusted_data.pipeline_summary(dataset)
 
     @application.get(
         "/api/datasets/{dataset}/upload-capability",
