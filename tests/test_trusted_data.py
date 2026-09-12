@@ -163,6 +163,61 @@ def test_repository_returns_real_rows_with_read_only_safe_identifiers(
     assert "not-returned" not in str(result)
 
 
+def test_repository_sorts_only_by_a_visible_resolved_column(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _config(tmp_path)
+    connection = _Connection()
+    monkeypatch.setattr("metadata_etl_api.trusted_data.psycopg.connect", _Connect(connection))
+
+    result = TrustedDataRepository("configured").preview(
+        DatasetCatalog(tmp_path).get("customers"),
+        limit=10,
+        offset=10,
+        sort="customer_id",
+        direction="desc",
+    )
+
+    assert result["sort"] == "customer_id"
+    assert result["direction"] == "desc"
+    assert connection.calls[-1][1] == (10, 10)
+    rendered = repr(connection.calls[-1][0])
+    assert "Identifier('customer_id')" in rendered
+    assert "SQL('DESC')" in rendered
+
+
+@pytest.mark.parametrize(
+    ("sort", "direction", "message"),
+    [
+        ("missing", "asc", "Unsupported trusted-data sort field"),
+        ("customer_id; DROP TABLE customers", "asc", "Unsupported trusted-data sort field"),
+        ("email", "asc", "Protected columns cannot be used for sorting"),
+        ("customer_id", "sideways", "Unsupported sort direction"),
+    ],
+)
+def test_repository_rejects_unsafe_or_protected_sorting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    sort: str,
+    direction: str,
+    message: str,
+) -> None:
+    _config(tmp_path)
+    connection = _Connection()
+    monkeypatch.setattr("metadata_etl_api.trusted_data.psycopg.connect", _Connect(connection))
+
+    with pytest.raises(TrustedDataError, match=message):
+        TrustedDataRepository("configured").preview(
+            DatasetCatalog(tmp_path).get("customers"),
+            limit=25,
+            offset=0,
+            sort=sort,
+            direction=direction,
+        )
+
+    assert connection.composed_calls == 0
+
+
 @pytest.mark.parametrize(
     ("connection", "state"),
     [(_Connection(empty=True), "EMPTY"), (_Connection(missing=True), "NOT_PUBLISHED")],
@@ -260,10 +315,18 @@ def test_pipeline_summary_uses_current_approved_configuration(tmp_path: Path) ->
 class _EndpointService:
     def __init__(self, state: str = "AVAILABLE") -> None:
         self.state = state
-        self.calls: list[tuple[str, int, int]] = []
+        self.calls: list[tuple[str, int, int, str | None, str]] = []
 
-    def preview(self, dataset: str, *, limit: int, offset: int) -> dict[str, Any]:
-        self.calls.append((dataset, limit, offset))
+    def preview(
+        self,
+        dataset: str,
+        *,
+        limit: int,
+        offset: int,
+        sort: str | None = None,
+        direction: str = "asc",
+    ) -> dict[str, Any]:
+        self.calls.append((dataset, limit, offset, sort, direction))
         if dataset == "missing":
             raise TrustedDataError(404, "Dataset not found.")
         return {
@@ -284,6 +347,8 @@ class _EndpointService:
             "limit": limit,
             "offset": offset,
             "has_more": self.state == "AVAILABLE" and offset + 1 < 26,
+            "sort": sort,
+            "direction": direction,
             "latest_successful_run_id": "RUN_001" if self.state != "NOT_PUBLISHED" else None,
             "last_updated": "2026-09-09T10:00:00Z" if self.state != "NOT_PUBLISHED" else None,
         }
@@ -303,7 +368,7 @@ def test_endpoint_defaults_paginates_and_returns_json_null() -> None:
     response = _client(service).get("/api/datasets/customers/trusted-data")
 
     assert response.status_code == 200
-    assert service.calls == [("customers", 25, 0)]
+    assert service.calls == [("customers", 25, 0, None, "asc")]
     assert response.json()["rows"] == [{"customer_id": "00123", "note": None}]
     assert response.json()["has_more"] is True
 
@@ -322,9 +387,27 @@ def test_endpoint_supports_next_page_without_accepting_database_controls() -> No
     )
 
     assert response.status_code == 200
-    assert service.calls == [("customers", 10, 10)]
+    assert service.calls == [("customers", 10, 10, None, "asc")]
     assert "private" not in response.text
     assert "DROP TABLE" not in response.text
+
+
+def test_endpoint_passes_valid_trusted_sort_and_rejects_invalid_direction() -> None:
+    service = _EndpointService()
+
+    response = _client(service).get(
+        "/api/datasets/customers/trusted-data?sort=customer_id&direction=desc"
+    )
+
+    assert response.status_code == 200
+    assert service.calls == [("customers", 25, 0, "customer_id", "desc")]
+    assert response.json()["sort"] == "customer_id"
+    assert (
+        _client(_EndpointService())
+        .get("/api/datasets/customers/trusted-data?direction=sideways")
+        .status_code
+        == 422
+    )
 
 
 @pytest.mark.parametrize("query", ["limit=0", "limit=101", "limit=invalid", "offset=-1"])

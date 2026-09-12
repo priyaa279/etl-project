@@ -7,6 +7,8 @@ import { PageHeader, SectionHeader } from "../components/PageHeader";
 import { EmptyState, ErrorState, LoadingState } from "../components/PageState";
 import { QualityTable } from "../components/QualityTable";
 import { RunsTable } from "../components/RunsTable";
+import { SchemaDriftTable } from "../components/SchemaDriftTable";
+import { SortableHeader } from "../components/SortableHeader";
 import { StatusBadge } from "../components/StatusBadge";
 import { useApi } from "../hooks/useApi";
 import type {
@@ -15,12 +17,16 @@ import type {
   DatasetWatermarkResponse,
   PipelineSummary,
   PipelineTransformation,
+  QualitySortField,
   QualitySummary,
   RunDetail,
+  RunSortField,
   SchemaDriftEvent,
+  SchemaDriftSortField,
   TrustedDataPreview,
 } from "../types/api";
 import { formatDateTime, formatDuration, formatLabel, formatNumber, shortHash } from "../utils/format";
+import { nextSort, type SortDirection, type SortState } from "../utils/tableSorting";
 
 type Tab = "overview" | "runs" | "quality" | "schema" | "watermark" | "trusted";
 
@@ -90,12 +96,16 @@ export function DatasetDetailPage() {
   const [trustedError, setTrustedError] = useState<{ message: string; disabled: boolean } | null>(null);
   const [trustedLoading, setTrustedLoading] = useState(false);
   const [trustedRevision, setTrustedRevision] = useState(0);
+  const [trustedSort, setTrustedSort] = useState<SortState<string> | null>(null);
+  const [runSort, setRunSort] = useState<SortState<RunSortField>>({ field: "started_at", direction: "desc" });
+  const [qualitySort, setQualitySort] = useState<SortState<QualitySortField>>({ field: "timestamp", direction: "desc" });
+  const [driftSort, setDriftSort] = useState<SortState<SchemaDriftSortField>>({ field: "detected_at", direction: "desc" });
   const loader = useCallback(async (): Promise<DatasetDetailData> => {
     const [detail, runs, quality, drift, watermark, uploadCapability, pipelineSummary] = await Promise.all([
       api.dataset(dataset),
-      api.datasetRuns(dataset),
-      api.datasetQuality(dataset),
-      api.datasetSchemaDrift(dataset),
+      api.datasetRuns(dataset, 20, runSort.field, runSort.direction),
+      api.datasetQuality(dataset, 100, qualitySort.field, qualitySort.direction),
+      api.datasetSchemaDrift(dataset, 100, driftSort.field, driftSort.direction),
       api.datasetWatermark(dataset),
       api.datasetUploadCapability(dataset).catch(() => null),
       api.pipelineSummary(dataset).catch(() => null),
@@ -116,7 +126,7 @@ export function DatasetDetailPage() {
       },
       pipelineSummary,
     };
-  }, [dataset]);
+  }, [dataset, driftSort.direction, driftSort.field, qualitySort.direction, qualitySort.field, runSort.direction, runSort.field]);
   const { data, error, loading, reload } = useApi(loader);
 
   useEffect(() => {
@@ -128,7 +138,13 @@ export function DatasetDetailPage() {
           setTrustedLoading(true);
           setTrustedError(null);
         }
-        return api.trustedData(dataset, previewLimit, trustedOffset);
+        return api.trustedData(
+          dataset,
+          previewLimit,
+          trustedOffset,
+          trustedSort?.field,
+          trustedSort?.direction,
+        );
       })
       .then((result) => {
         if (active) setTrustedData(result);
@@ -147,7 +163,14 @@ export function DatasetDetailPage() {
     return () => {
       active = false;
     };
-  }, [dataset, tab, trustedOffset, trustedRevision]);
+  }, [dataset, tab, trustedOffset, trustedRevision, trustedSort?.direction, trustedSort?.field]);
+
+  const handleTrustedSort = (field: string, preferredDirection: SortDirection) => {
+    setTrustedOffset(0);
+    setTrustedSort((current) =>
+      current ? nextSort(current, field, preferredDirection) : { field, direction: preferredDirection },
+    );
+  };
 
   return (
     <>
@@ -173,7 +196,7 @@ export function DatasetDetailPage() {
       />
       {loading && <LoadingState label={`Loading ${dataset}`} />}
       {error && <ErrorState message={error} onRetry={reload} />}
-      {data && (
+      {!loading && data && (
         <div className="space-y-6">
           <div className="panel overflow-x-auto p-2">
             <div className="flex min-w-max gap-1" role="tablist" aria-label="Dataset details">
@@ -254,13 +277,13 @@ export function DatasetDetailPage() {
             )}
 
             {tab === "runs" && (
-              data.runs.length ? <RunsTable runs={data.runs} caption={`Runs for ${dataset}`} /> : <EmptyState title="No runs recorded" message="This dataset has no execution history." />
+              data.runs.length ? <RunsTable runs={data.runs} caption={`Runs for ${dataset}`} sort={runSort} onSort={(field, preferred) => setRunSort((current) => nextSort(current, field, preferred))} /> : <EmptyState title="No runs recorded" message="This dataset has no execution history." />
             )}
 
             {tab === "quality" && (
               <div>
                 <SectionHeader title="Quality history" description="Rule-level summaries only; quarantine values are never returned." />
-                {data.quality.length ? <QualityTable results={data.quality} showDataset={false} /> : <EmptyState title="No quality results recorded" message="No quality-rule summaries exist for this dataset." />}
+                {data.quality.length ? <QualityTable results={data.quality} showDataset={false} sort={qualitySort} onSort={(field, preferred) => setQualitySort((current) => nextSort(current, field, preferred))} /> : <EmptyState title="No quality results recorded" message="No quality-rule summaries exist for this dataset." />}
               </div>
             )}
 
@@ -284,7 +307,7 @@ export function DatasetDetailPage() {
                 </div>
                 <SectionHeader title="Drift events" description="Most recent source and canonical changes with their configured action." />
                 {data.drift.length ? (
-                  <div className="table-shell"><table className="data-table"><caption className="sr-only">Schema drift for {dataset}</caption><thead><tr><th scope="col">Level</th><th scope="col">Type</th><th scope="col">Policy</th><th scope="col">Action</th><th scope="col">Detected</th></tr></thead><tbody>{data.drift.map((event) => <tr key={`${event.run_id}-${event.schema_level}-${event.drift_type}`}><td>{formatLabel(event.schema_level)}</td><td>{formatLabel(event.drift_type)}</td><td>{event.policy}</td><td><StatusBadge status={event.action_taken} /></td><td>{formatDateTime(event.detected_at)}</td></tr>)}</tbody></table></div>
+                  <SchemaDriftTable events={data.drift} sort={driftSort} onSort={(field, preferred) => setDriftSort((current) => nextSort(current, field, preferred))} showDataset={false} caption={`Schema drift for ${dataset}`} />
                 ) : <EmptyState title="No schema drift recorded" message="No drift events exist for this dataset." />}
               </div>
             )}
@@ -347,7 +370,11 @@ export function DatasetDetailPage() {
                     <div className="table-shell" data-testid="trusted-data-table-container">
                       <table className="data-table trusted-data-table">
                         <caption className="sr-only">Trusted data for {dataset}</caption>
-                        <thead><tr>{trustedData.columns.map((column) => <th key={column.name} scope="col" title={column.classification ? `Classification: ${column.classification}` : undefined}>{column.name}{column.redacted && <span className="ml-2 text-amber-700">Protected</span>}</th>)}</tr></thead>
+                        <thead><tr>{trustedData.columns.map((column) => column.redacted ? (
+                          <th key={column.name} scope="col" title={column.classification ? `Classification: ${column.classification}` : undefined}>{column.name}<span className="ml-2 text-amber-700">Protected</span></th>
+                        ) : (
+                          <SortableHeader key={column.name} label={column.name} field={column.name} sort={trustedSort ?? { field: "", direction: "asc" }} onSort={handleTrustedSort} />
+                        ))}</tr></thead>
                         <tbody>{trustedData.rows.map((row, rowIndex) => <tr key={`${trustedData.offset}-${rowIndex}`}>{trustedData.columns.map((column) => {
                           const rendered = column.redacted ? "REDACTED" : displayValue(row[column.name]);
                           return <td key={column.name}><span className={column.redacted ? "text-xs font-bold text-amber-700" : row[column.name] === null ? "text-xs italic text-slate-400" : "trusted-cell"} title={rendered}>{rendered}</span></td>;

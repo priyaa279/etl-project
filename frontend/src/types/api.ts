@@ -63,6 +63,35 @@ export interface RunDetail {
   correlation_id?: string | null;
 }
 
+export type RunSortField =
+  | "run_id"
+  | "dataset"
+  | "status"
+  | "started_at"
+  | "duration_seconds"
+  | "source_type"
+  | "load_strategy"
+  | "rows_loaded"
+  | "rows_quarantined";
+
+export type QualitySortField =
+  | "dataset"
+  | "rule_id"
+  | "rule_type"
+  | "records_checked"
+  | "records_failed"
+  | "failure_rate"
+  | "status"
+  | "timestamp";
+
+export type SchemaDriftSortField =
+  | "dataset"
+  | "schema_level"
+  | "drift_type"
+  | "policy"
+  | "action_taken"
+  | "detected_at";
+
 export interface QualitySummary {
   run_id: string;
   dataset: string;
@@ -144,6 +173,8 @@ export interface TrustedDataPreview {
   limit: number;
   offset: number;
   has_more: boolean;
+  sort: string | null;
+  direction: "asc" | "desc";
   latest_successful_run_id: string | null;
   last_updated: string | null;
 }

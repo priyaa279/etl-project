@@ -156,6 +156,8 @@ class TrustedDataPreview(BaseModel):
     limit: int
     offset: int
     has_more: bool
+    sort: str | None
+    direction: Literal["asc", "desc"]
     latest_successful_run_id: str | None
     last_updated: datetime | None
 

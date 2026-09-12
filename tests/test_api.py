@@ -105,7 +105,9 @@ class FakeRepository:
     def run_quality(self, _run_id: str) -> list[dict[str, Any]]:
         return [_quality()]
 
-    def dataset_quality(self, _dataset_name: str, *, limit: int) -> list[dict[str, Any]]:
+    def dataset_quality(
+        self, _dataset_name: str, *, limit: int, **_values: Any
+    ) -> list[dict[str, Any]]:
         assert limit > 0
         return [_quality()]
 

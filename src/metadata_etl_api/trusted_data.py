@@ -31,7 +31,15 @@ class TrustedDataRepository:
     def __init__(self, dsn: str | None) -> None:
         self.dsn = dsn
 
-    def preview(self, config: ETLConfig, *, limit: int, offset: int) -> dict[str, Any]:
+    def preview(
+        self,
+        config: ETLConfig,
+        *,
+        limit: int,
+        offset: int,
+        sort: str | None = None,
+        direction: str = "asc",
+    ) -> dict[str, Any]:
         if not self.dsn:
             raise TrustedDataError(503, "Trusted data is temporarily unavailable.")
         classifications = {
@@ -74,6 +82,8 @@ class TrustedDataRepository:
                         total_rows=0,
                         limit=limit,
                         offset=offset,
+                        sort=sort,
+                        direction=direction,
                         latest_run=latest_run,
                     )
 
@@ -94,6 +104,13 @@ class TrustedDataRepository:
                         }
                     )
 
+                if direction not in {"asc", "desc"}:
+                    raise TrustedDataError(400, "Unsupported sort direction.")
+                if sort is not None and (sort not in {column["name"] for column in columns}):
+                    raise TrustedDataError(400, "Unsupported trusted-data sort field.")
+                if sort in redacted_names:
+                    raise TrustedDataError(400, "Protected columns cannot be used for sorting.")
+
                 target = sql.Identifier(config.destination_schema, config.target_table)
                 total_row = connection.execute(
                     sql.SQL("SELECT COUNT(*) AS total_rows FROM {}").format(target)
@@ -109,9 +126,19 @@ class TrustedDataRepository:
                 ]
                 preferred = [name for name in config.load_keys if name in column_names]
                 order_names = preferred + [name for name in column_names if name not in preferred]
-                order_by = [
-                    sql.SQL("{} NULLS LAST").format(sql.Identifier(name)) for name in order_names
-                ]
+                order_by = []
+                if sort is not None:
+                    order_by.append(
+                        sql.SQL("{} {} NULLS LAST").format(
+                            sql.Identifier(sort),
+                            sql.SQL("ASC" if direction == "asc" else "DESC"),
+                        )
+                    )
+                order_by.extend(
+                    sql.SQL("{} ASC NULLS LAST").format(sql.Identifier(name))
+                    for name in order_names
+                    if name != sort
+                )
                 rows = list(
                     connection.execute(
                         sql.SQL("SELECT {} FROM {} ORDER BY {} LIMIT %s OFFSET %s").format(
@@ -130,6 +157,8 @@ class TrustedDataRepository:
                     total_rows=total_rows,
                     limit=limit,
                     offset=offset,
+                    sort=sort,
+                    direction=direction,
                     latest_run=latest_run,
                 )
         except TrustedDataError:
@@ -147,6 +176,8 @@ class TrustedDataRepository:
         total_rows: int,
         limit: int,
         offset: int,
+        sort: str | None,
+        direction: str,
         latest_run: dict[str, Any] | None,
     ) -> dict[str, Any]:
         return {
@@ -159,6 +190,8 @@ class TrustedDataRepository:
             "limit": limit,
             "offset": offset,
             "has_more": offset + len(rows) < total_rows,
+            "sort": sort,
+            "direction": direction,
             "latest_successful_run_id": latest_run["run_id"] if latest_run else None,
             "last_updated": latest_run["finished_at"] if latest_run else None,
         }
@@ -186,14 +219,28 @@ class TrustedDataService:
             repository=TrustedDataRepository(settings.database_dsn),
         )
 
-    def preview(self, dataset: str, *, limit: int, offset: int) -> dict[str, Any]:
+    def preview(
+        self,
+        dataset: str,
+        *,
+        limit: int,
+        offset: int,
+        sort: str | None = None,
+        direction: str = "asc",
+    ) -> dict[str, Any]:
         if not self.enabled:
             raise TrustedDataError(
                 403,
                 "Trusted data preview is disabled in this environment.",
             )
         config = self._config(dataset)
-        return self.repository.preview(config, limit=limit, offset=offset)
+        return self.repository.preview(
+            config,
+            limit=limit,
+            offset=offset,
+            sort=sort,
+            direction=direction,
+        )
 
     def pipeline_summary(self, dataset: str) -> dict[str, Any]:
         config = self._config(dataset)

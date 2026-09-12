@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, ClassVar
 
 import psycopg
 from psycopg.rows import dict_row
@@ -13,6 +13,36 @@ class RepositoryError(RuntimeError):
 
 class ObservabilityRepository:
     """Read-only, parameterized access to the existing observability views."""
+
+    RUN_SORT_FIELDS: ClassVar[dict[str, str]] = {
+        "run_id": "LOWER(run_id)",
+        "dataset": "LOWER(dataset)",
+        "status": "LOWER(status)",
+        "started_at": "started_at",
+        "duration_seconds": "duration_seconds",
+        "source_type": "LOWER(source_type)",
+        "load_strategy": "LOWER(load_strategy)",
+        "rows_loaded": "rows_loaded",
+        "rows_quarantined": "rows_quarantined",
+    }
+    QUALITY_SORT_FIELDS: ClassVar[dict[str, str]] = {
+        "dataset": "LOWER(dataset)",
+        "rule_id": "LOWER(rule_id)",
+        "rule_type": "LOWER(rule_type)",
+        "records_checked": "records_checked",
+        "records_failed": "records_failed",
+        "failure_rate": "failure_rate",
+        "status": "LOWER(status)",
+        "timestamp": "timestamp",
+    }
+    DRIFT_SORT_FIELDS: ClassVar[dict[str, str]] = {
+        "dataset": "LOWER(dataset)",
+        "schema_level": "LOWER(schema_level)",
+        "drift_type": "LOWER(drift_type)",
+        "policy": "LOWER(policy)",
+        "action_taken": "LOWER(action_taken)",
+        "detected_at": "detected_at",
+    }
 
     def __init__(self, dsn: str | None) -> None:
         self.dsn = dsn
@@ -33,6 +63,21 @@ class ObservabilityRepository:
     def _fetch_one(self, query: str, parameters: Sequence[Any] = ()) -> dict[str, Any] | None:
         rows = self._fetch_all(query, parameters)
         return rows[0] if rows else None
+
+    @staticmethod
+    def _order_by(
+        field: str,
+        direction: str,
+        allowed: dict[str, str],
+        tie_breakers: Sequence[tuple[str, str]],
+    ) -> str:
+        if field not in allowed or direction not in {"asc", "desc"}:
+            raise RepositoryError("Unsupported sort request")
+        clauses = [f"{allowed[field]} {direction.upper()} NULLS LAST"]
+        for tie_field, tie_direction in tie_breakers:
+            if tie_field != field:
+                clauses.append(f"{allowed[tie_field]} {tie_direction} NULLS LAST")
+        return ", ".join(clauses)
 
     def overview(self, *, hours: int = 24) -> dict[str, Any]:
         row = self._fetch_one(
@@ -113,14 +158,21 @@ class ObservabilityRepository:
         *,
         limit: int,
         dataset: str | None = None,
+        search: str | None = None,
         status: str | None = None,
         load_strategy: str | None = None,
+        sort: str = "started_at",
+        direction: str = "desc",
     ) -> list[dict[str, Any]]:
         conditions: list[str] = []
         parameters: list[Any] = []
         if dataset:
             conditions.append("dataset = %s")
             parameters.append(dataset)
+        if search:
+            conditions.append("(LOWER(run_id) LIKE %s OR LOWER(dataset) LIKE %s)")
+            search_pattern = f"%{search.lower()}%"
+            parameters.extend((search_pattern, search_pattern))
         if status:
             conditions.append("status = %s")
             parameters.append(status)
@@ -130,7 +182,13 @@ class ObservabilityRepository:
         query = "SELECT * FROM etl_observability.pipeline_runs"
         if conditions:
             query += " WHERE " + " AND ".join(conditions)
-        query += " ORDER BY started_at DESC, run_id DESC LIMIT %s"
+        order_by = self._order_by(
+            sort,
+            direction,
+            self.RUN_SORT_FIELDS,
+            (("started_at", "DESC"), ("run_id", "DESC")),
+        )
+        query += f" ORDER BY {order_by} LIMIT %s"
         parameters.append(limit)
         return self._fetch_all(query, parameters)
 
@@ -174,14 +232,27 @@ class ObservabilityRepository:
             (run_id,),
         )
 
-    def dataset_quality(self, dataset: str, *, limit: int) -> list[dict[str, Any]]:
+    def dataset_quality(
+        self,
+        dataset: str,
+        *,
+        limit: int,
+        sort: str = "timestamp",
+        direction: str = "desc",
+    ) -> list[dict[str, Any]]:
+        order_by = self._order_by(
+            sort,
+            direction,
+            self.QUALITY_SORT_FIELDS,
+            (("timestamp", "DESC"), ("rule_id", "ASC")),
+        )
         return self._fetch_all(
-            """
+            f"""
             SELECT run_id, dataset, rule_id, rule_type, records_checked,
                    records_failed, failure_rate, status, timestamp
             FROM etl_observability.quality_summary
             WHERE dataset = %s
-            ORDER BY timestamp DESC, run_id DESC, rule_id
+            ORDER BY {order_by}, run_id DESC
             LIMIT %s
             """,
             (dataset, limit),
@@ -251,13 +322,37 @@ class ObservabilityRepository:
         )
         return {**totals, **breakdowns, "recent_trend": trend}
 
-    def schema_drift(self, *, limit: int, dataset: str | None = None) -> list[dict[str, Any]]:
+    def schema_drift(
+        self,
+        *,
+        limit: int,
+        dataset: str | None = None,
+        drift_type: str | None = None,
+        action_taken: str | None = None,
+        sort: str = "detected_at",
+        direction: str = "desc",
+    ) -> list[dict[str, Any]]:
         query = "SELECT * FROM etl_observability.schema_drift_summary"
+        conditions: list[str] = []
         parameters: list[Any] = []
         if dataset:
-            query += " WHERE dataset = %s"
+            conditions.append("dataset = %s")
             parameters.append(dataset)
-        query += " ORDER BY detected_at DESC, run_id DESC LIMIT %s"
+        if drift_type:
+            conditions.append("drift_type = %s")
+            parameters.append(drift_type)
+        if action_taken:
+            conditions.append("action_taken = %s")
+            parameters.append(action_taken)
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        order_by = self._order_by(
+            sort,
+            direction,
+            self.DRIFT_SORT_FIELDS,
+            (("detected_at", "DESC"), ("dataset", "ASC")),
+        )
+        query += f" ORDER BY {order_by}, run_id DESC LIMIT %s"
         parameters.append(limit)
         return self._fetch_all(query, parameters)
 

@@ -54,6 +54,8 @@ Completely new dataset -> upload -> profile -> draft YAML -> human schema review
 The **ETL Control Center** includes Overview, Datasets, Runs, Data Quality, Schema Drift, and
 Watermarks pages, plus dataset and run detail views. Eligible Dataset Detail pages now link to
 **Upload new data**. PostgreSQL-source datasets clearly show that file upload is not applicable.
+Applicable operational tables support accessible ascending/descending column sorting with useful
+defaults; paginated data is sorted by validated server-side fields before paging.
 When enabled, **Onboard Dataset** is a separate action that creates and validates only an
 unapproved draft. Approval and the first ETL run remain separate, explicit actions.
 
@@ -85,7 +87,8 @@ and a **Trusted Data** tab for inspecting the rows currently published in the co
 target. The preview accepts only a logical approved dataset name, resolves the target server-side,
 uses read-only transactions, suppresses `pii` and `restricted` values, and returns at most 100 rows
 per request with a default page size of 25. It never accepts SQL, schema names, table names, or sort
-expressions from the browser, and it does not rerun ETL transformations.
+expressions from the browser; a selected visible column is verified against the resolved physical
+schema and safely quoted before ordering. It does not rerun ETL transformations.
 Pages are ordered deterministically by configured load keys when available, followed by the
 remaining trusted-result columns as generic tie-breakers; this preview order does not imply business
 ranking. The exact row count is intentionally simple for this local project scale.

@@ -1,20 +1,41 @@
 import { Activity, ListChecks, ShieldAlert, Sigma } from "lucide-react";
-import { useCallback } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { api } from "../api/client";
 import { MetricCard } from "../components/MetricCard";
 import { PageHeader, SectionHeader } from "../components/PageHeader";
 import { EmptyState, ErrorState, LoadingState } from "../components/PageState";
+import { SortableHeader } from "../components/SortableHeader";
 import { useApi } from "../hooks/useApi";
 import type { QualityBreakdown } from "../types/api";
+import { nextSort, sortRows, type SortDirection, type SortState } from "../utils/tableSorting";
 import { formatNumber, formatPercent } from "../utils/format";
 
 function BreakdownTable({ title, rows }: { title: string; rows: QualityBreakdown[] }) {
+  type BreakdownSortField = "label" | "records_checked" | "records_failed" | "failure_rate";
+  const [sort, setSort] = useState<SortState<BreakdownSortField>>({
+    field: "records_failed",
+    direction: "desc",
+  });
+  const sorted = useMemo(
+    () =>
+      sortRows(rows, sort, {
+        label: { value: (row) => row.label },
+        records_checked: { value: (row) => row.records_checked, kind: "number" },
+        records_failed: { value: (row) => row.records_failed, kind: "number" },
+        failure_rate: { value: (row) => row.failure_rate, kind: "number" },
+      }),
+    [rows, sort],
+  );
+  const handleSort = (field: BreakdownSortField, preferredDirection: SortDirection) => {
+    setSort((current) => nextSort(current, field, preferredDirection));
+  };
+
   return (
     <section>
       <SectionHeader title={title} />
       {rows.length ? (
-        <div className="table-shell"><table className="data-table"><caption className="sr-only">{title}</caption><thead><tr><th scope="col">Name</th><th scope="col">Checked</th><th scope="col">Failed</th><th scope="col">Failure rate</th></tr></thead><tbody>{rows.map((row) => <tr key={row.label}><td className="font-semibold text-slate-800">{row.label}</td><td>{formatNumber(row.records_checked)}</td><td>{formatNumber(row.records_failed)}</td><td>{formatPercent(row.failure_rate)}</td></tr>)}</tbody></table></div>
+        <div className="table-shell"><table className="data-table"><caption className="sr-only">{title}</caption><thead><tr><SortableHeader label="Name" field="label" sort={sort} onSort={handleSort} /><SortableHeader label="Checked" field="records_checked" sort={sort} preferredDirection="desc" onSort={handleSort} /><SortableHeader label="Failed" field="records_failed" sort={sort} preferredDirection="desc" onSort={handleSort} /><SortableHeader label="Failure rate" field="failure_rate" sort={sort} preferredDirection="desc" onSort={handleSort} /></tr></thead><tbody>{sorted.map((row) => <tr key={row.label}><td className="font-semibold text-slate-800">{row.label}</td><td>{formatNumber(row.records_checked)}</td><td>{formatNumber(row.records_failed)}</td><td>{formatPercent(row.failure_rate)}</td></tr>)}</tbody></table></div>
       ) : <EmptyState title="No quality failures recorded" message="No quality summaries exist for this time window." />}
     </section>
   );

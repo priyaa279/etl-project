@@ -16,6 +16,9 @@ import type {
   OnboardingReview,
   OnboardingSession,
   PipelineSummary,
+  QualitySortField,
+  RunSortField,
+  SchemaDriftSortField,
   SchemaDecision,
   TrustedDataPreview,
 } from "../types/api";
@@ -64,9 +67,15 @@ export const api = {
   datasets: () => request<DatasetSummary[]>("/api/datasets"),
   dataset: (dataset: string) =>
     request<DatasetSummary>(`/api/datasets/${encodeURIComponent(dataset)}`),
-  trustedData: (dataset: string, limit = 25, offset = 0) =>
+  trustedData: (
+    dataset: string,
+    limit = 25,
+    offset = 0,
+    sort?: string,
+    direction?: "asc" | "desc",
+  ) =>
     request<TrustedDataPreview>(
-      `/api/datasets/${encodeURIComponent(dataset)}/trusted-data${query({ limit, offset })}`,
+      `/api/datasets/${encodeURIComponent(dataset)}/trusted-data${query({ limit, offset, sort, direction })}`,
     ),
   pipelineSummary: (dataset: string) =>
     request<PipelineSummary>(
@@ -222,17 +231,32 @@ export const api = {
   onboardingCompletion: (onboardingId: string) => request<OnboardingCompletion>(
     `/api/onboarding/${encodeURIComponent(onboardingId)}/completion`,
   ),
-  datasetRuns: (dataset: string, limit = 20) =>
+  datasetRuns: (
+    dataset: string,
+    limit = 20,
+    sort: RunSortField = "started_at",
+    direction: "asc" | "desc" = "desc",
+  ) =>
     request<RunDetail[]>(
-      `/api/datasets/${encodeURIComponent(dataset)}/runs${query({ limit })}`,
+      `/api/datasets/${encodeURIComponent(dataset)}/runs${query({ limit, sort, direction })}`,
     ),
-  datasetQuality: (dataset: string, limit = 100) =>
+  datasetQuality: (
+    dataset: string,
+    limit = 100,
+    sort: QualitySortField = "timestamp",
+    direction: "asc" | "desc" = "desc",
+  ) =>
     request<QualitySummary[]>(
-      `/api/datasets/${encodeURIComponent(dataset)}/quality${query({ limit })}`,
+      `/api/datasets/${encodeURIComponent(dataset)}/quality${query({ limit, sort, direction })}`,
     ),
-  datasetSchemaDrift: (dataset: string, limit = 50) =>
+  datasetSchemaDrift: (
+    dataset: string,
+    limit = 50,
+    sort: SchemaDriftSortField = "detected_at",
+    direction: "asc" | "desc" = "desc",
+  ) =>
     request<SchemaDriftEvent[]>(
-      `/api/datasets/${encodeURIComponent(dataset)}/schema-drift${query({ limit })}`,
+      `/api/datasets/${encodeURIComponent(dataset)}/schema-drift${query({ limit, sort, direction })}`,
     ),
   datasetWatermark: (dataset: string) =>
     request<DatasetWatermarkResponse>(
@@ -241,14 +265,30 @@ export const api = {
   runs: (filters: {
     limit?: number;
     dataset?: string;
+    search?: string;
     status?: string;
     load_strategy?: string;
+    sort?: RunSortField;
+    direction?: "asc" | "desc";
   }) => request<RunDetail[]>(`/api/runs${query(filters)}`),
   run: (runId: string) => request<RunDetail>(`/api/runs/${encodeURIComponent(runId)}`),
   runQuality: (runId: string) =>
     request<QualitySummary[]>(`/api/runs/${encodeURIComponent(runId)}/quality`),
   quality: (days = 30) => request<QualityOverview>(`/api/quality${query({ days })}`),
-  schemaDrift: (limit = 100) =>
-    request<SchemaDriftEvent[]>(`/api/schema-drift${query({ limit })}`),
+  schemaDrift: (
+    limit = 100,
+    sort: SchemaDriftSortField = "detected_at",
+    direction: "asc" | "desc" = "desc",
+    dataset?: string,
+    driftType?: string,
+    actionTaken?: string,
+  ) => request<SchemaDriftEvent[]>(`/api/schema-drift${query({
+    limit,
+    sort,
+    direction,
+    dataset,
+    drift_type: driftType,
+    action_taken: actionTaken,
+  })}`),
   watermarks: () => request<WatermarkState[]>("/api/watermarks"),
 };

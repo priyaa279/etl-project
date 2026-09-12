@@ -88,6 +88,36 @@ def _trusted_data_service(request: Request) -> TrustedDataService:
 TrustedData = Annotated[TrustedDataService, Depends(_trusted_data_service)]
 RunStatusFilter = Literal["SUCCEEDED", "FAILED", "RUNNING"]
 LoadStrategyFilter = Literal["full", "incremental", "upsert", "scd2"]
+SortDirection = Literal["asc", "desc"]
+RunSortField = Literal[
+    "run_id",
+    "dataset",
+    "status",
+    "started_at",
+    "duration_seconds",
+    "source_type",
+    "load_strategy",
+    "rows_loaded",
+    "rows_quarantined",
+]
+QualitySortField = Literal[
+    "dataset",
+    "rule_id",
+    "rule_type",
+    "records_checked",
+    "records_failed",
+    "failure_rate",
+    "status",
+    "timestamp",
+]
+SchemaDriftSortField = Literal[
+    "dataset",
+    "schema_level",
+    "drift_type",
+    "policy",
+    "action_taken",
+    "detected_at",
+]
 
 
 def create_app() -> FastAPI:
@@ -173,8 +203,16 @@ def create_app() -> FastAPI:
         trusted_data: TrustedData,
         limit: Annotated[int, Query(ge=1, le=MAX_PREVIEW_LIMIT)] = DEFAULT_PREVIEW_LIMIT,
         offset: Annotated[int, Query(ge=0)] = 0,
+        sort: Annotated[str | None, Query(max_length=128)] = None,
+        direction: SortDirection = "asc",
     ) -> dict[str, object]:
-        return trusted_data.preview(dataset, limit=limit, offset=offset)
+        return trusted_data.preview(
+            dataset,
+            limit=limit,
+            offset=offset,
+            sort=sort,
+            direction=direction,
+        )
 
     @application.get(
         "/api/datasets/{dataset}/pipeline-summary",
@@ -496,10 +534,17 @@ def create_app() -> FastAPI:
         dataset: str,
         repository: Repository,
         limit: Annotated[int, Query(ge=1, le=200)] = 20,
+        sort: RunSortField = "started_at",
+        direction: SortDirection = "desc",
     ) -> list[dict[str, object]]:
         if repository.dataset(dataset) is None:
             raise HTTPException(status_code=404, detail="Dataset not found.")
-        return repository.runs(limit=limit, dataset=dataset)
+        return repository.runs(
+            limit=limit,
+            dataset=dataset,
+            sort=sort,
+            direction=direction,
+        )
 
     @application.get(
         "/api/datasets/{dataset}/quality",
@@ -510,10 +555,17 @@ def create_app() -> FastAPI:
         dataset: str,
         repository: Repository,
         limit: Annotated[int, Query(ge=1, le=500)] = 100,
+        sort: QualitySortField = "timestamp",
+        direction: SortDirection = "desc",
     ) -> list[dict[str, object]]:
         if repository.dataset(dataset) is None:
             raise HTTPException(status_code=404, detail="Dataset not found.")
-        return repository.dataset_quality(dataset, limit=limit)
+        return repository.dataset_quality(
+            dataset,
+            limit=limit,
+            sort=sort,
+            direction=direction,
+        )
 
     @application.get(
         "/api/datasets/{dataset}/schema-drift",
@@ -524,10 +576,17 @@ def create_app() -> FastAPI:
         dataset: str,
         repository: Repository,
         limit: Annotated[int, Query(ge=1, le=200)] = 50,
+        sort: SchemaDriftSortField = "detected_at",
+        direction: SortDirection = "desc",
     ) -> list[dict[str, object]]:
         if repository.dataset(dataset) is None:
             raise HTTPException(status_code=404, detail="Dataset not found.")
-        return repository.schema_drift(limit=limit, dataset=dataset)
+        return repository.schema_drift(
+            limit=limit,
+            dataset=dataset,
+            sort=sort,
+            direction=direction,
+        )
 
     @application.get(
         "/api/datasets/{dataset}/watermark",
@@ -544,14 +603,20 @@ def create_app() -> FastAPI:
         repository: Repository,
         limit: Annotated[int, Query(ge=1, le=200)] = 50,
         dataset: str | None = None,
+        search: Annotated[str | None, Query(max_length=200)] = None,
         status: RunStatusFilter | None = None,
         load_strategy: LoadStrategyFilter | None = None,
+        sort: RunSortField = "started_at",
+        direction: SortDirection = "desc",
     ) -> list[dict[str, object]]:
         return repository.runs(
             limit=limit,
             dataset=dataset,
+            search=search,
             status=status,
             load_strategy=load_strategy,
+            sort=sort,
+            direction=direction,
         )
 
     @application.get("/api/runs/{run_id}", response_model=RunDetail, tags=["runs"])
@@ -585,8 +650,19 @@ def create_app() -> FastAPI:
         repository: Repository,
         limit: Annotated[int, Query(ge=1, le=200)] = 100,
         dataset: str | None = None,
+        drift_type: Annotated[str | None, Query(max_length=100)] = None,
+        action_taken: Annotated[str | None, Query(max_length=100)] = None,
+        sort: SchemaDriftSortField = "detected_at",
+        direction: SortDirection = "desc",
     ) -> list[dict[str, object]]:
-        return repository.schema_drift(limit=limit, dataset=dataset)
+        return repository.schema_drift(
+            limit=limit,
+            dataset=dataset,
+            drift_type=drift_type,
+            action_taken=action_taken,
+            sort=sort,
+            direction=direction,
+        )
 
     @application.get("/api/watermarks", response_model=list[WatermarkState], tags=["watermarks"])
     def watermarks(repository: Repository) -> list[dict[str, object]]:

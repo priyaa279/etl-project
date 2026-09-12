@@ -1,32 +1,32 @@
 import { Database, GitCompareArrows } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { useCallback, useState } from "react";
 import { api } from "../api/client";
 import { PageHeader } from "../components/PageHeader";
 import { EmptyState, ErrorState, LoadingState } from "../components/PageState";
-import { StatusBadge } from "../components/StatusBadge";
+import { SchemaDriftTable } from "../components/SchemaDriftTable";
 import { useApi } from "../hooks/useApi";
-import { formatDateTime, formatLabel } from "../utils/format";
+import type { SchemaDriftSortField } from "../types/api";
+import { nextSort, type SortDirection, type SortState } from "../utils/tableSorting";
 
 export function SchemaDriftPage() {
-  const loader = useCallback(() => api.schemaDrift(200), []);
-  const { data, error, loading, reload } = useApi(loader);
   const [dataset, setDataset] = useState("");
   const [driftType, setDriftType] = useState("");
   const [action, setAction] = useState("");
-  const filtered = useMemo(
-    () =>
-      (data ?? []).filter(
-        (event) =>
-          (!dataset || event.dataset === dataset) &&
-          (!driftType || event.drift_type === driftType) &&
-          (!action || event.action_taken === action),
-      ),
-    [action, data, dataset, driftType],
+  const [sort, setSort] = useState<SortState<SchemaDriftSortField>>({
+    field: "detected_at",
+    direction: "desc",
+  });
+  const loader = useCallback(
+    () => api.schemaDrift(200, sort.field, sort.direction, dataset, driftType, action),
+    [action, dataset, driftType, sort.direction, sort.field],
   );
+  const { data, error, loading, reload } = useApi(loader);
   const datasets = [...new Set((data ?? []).map((event) => event.dataset))];
   const types = [...new Set((data ?? []).map((event) => event.drift_type))];
   const actions = [...new Set((data ?? []).map((event) => event.action_taken))];
+  const handleSort = (field: SchemaDriftSortField, preferredDirection: SortDirection) => {
+    setSort((current) => nextSort(current, field, preferredDirection));
+  };
 
   return (
     <>
@@ -42,10 +42,10 @@ export function SchemaDriftPage() {
       </div>
       {loading && <LoadingState label="Loading schema drift" />}
       {error && <ErrorState message={error} onRetry={reload} />}
-      {data && filtered.length > 0 && (
-        <div className="table-shell"><table className="data-table"><caption className="sr-only">Recent schema drift events</caption><thead><tr><th scope="col">Dataset</th><th scope="col">Level</th><th scope="col">Drift type</th><th scope="col">Policy</th><th scope="col">Action</th><th scope="col">Detected</th></tr></thead><tbody>{filtered.map((event) => <tr key={`${event.run_id}-${event.schema_level}-${event.drift_type}`}><td><Link className="table-link" to={`/datasets/${event.dataset}`}>{event.dataset}</Link></td><td>{formatLabel(event.schema_level)}</td><td>{formatLabel(event.drift_type)}</td><td>{event.policy}</td><td><StatusBadge status={event.action_taken} /></td><td>{formatDateTime(event.detected_at)}</td></tr>)}</tbody></table></div>
+      {!loading && data && data.length > 0 && (
+        <SchemaDriftTable events={data} sort={sort} onSort={handleSort} />
       )}
-      {data && filtered.length === 0 && <EmptyState title="No schema drift recorded" message="No events match the current filters." />}
+      {!loading && data && data.length === 0 && <EmptyState title="No schema drift recorded" message="No events match the current filters." />}
     </>
   );
 }

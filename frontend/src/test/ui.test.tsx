@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -127,6 +127,8 @@ const trustedPreview: TrustedDataPreview = {
   limit: 25,
   offset: 0,
   has_more: false,
+  sort: null,
+  direction: "asc",
   latest_successful_run_id: "RUN_001",
   last_updated: "2026-09-07T10:00:01Z",
 };
@@ -342,6 +344,26 @@ it("renders actual trusted rows, leading zeros, NULL, privacy, and run navigatio
   expect(screen.getByRole("link", { name: "View Run Details" })).toHaveAttribute("href", "/runs/RUN_001");
   expect(screen.getByRole("button", { name: "Previous" })).toBeDisabled();
   expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: /sort by customer_id ascending/i })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /sort by email/i })).not.toBeInTheDocument();
+});
+
+it("requests trusted-data sorting server-side and resets pagination", async () => {
+  mockDatasetDetail();
+  const trusted = vi.spyOn(api, "trustedData").mockResolvedValue({
+    ...trustedPreview,
+    total_rows: 47,
+    has_more: true,
+  });
+  const user = userEvent.setup();
+  renderDatasetDetail();
+
+  await user.click(await screen.findByRole("tab", { name: "Trusted Data" }));
+  await screen.findByText("Showing 1–1 of 47");
+  await user.click(screen.getByRole("button", { name: /sort by customer_id ascending/i }));
+  await waitFor(() => expect(trusted).toHaveBeenLastCalledWith("customers", 25, 0, "customer_id", "asc"));
+  await user.click(screen.getByRole("button", { name: /sorted by customer_id ascending/i }));
+  await waitFor(() => expect(trusted).toHaveBeenLastCalledWith("customers", 25, 0, "customer_id", "desc"));
 });
 
 it("shows trusted-data loading and advances through server-side pages", async () => {
@@ -377,7 +399,7 @@ it("shows trusted-data loading and advances through server-side pages", async ()
   expect(screen.getByText("Showing 26–26 of 26")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Previous" })).toBeEnabled();
   expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
-  expect(trusted).toHaveBeenLastCalledWith("customers", 25, 25);
+  expect(trusted).toHaveBeenLastCalledWith("customers", 25, 25, undefined, undefined);
 });
 
 it("shows the conservative feature-disabled state", async () => {
